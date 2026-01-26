@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    /* Style pour la modale du barème */
+    dialog::backdrop {
+        background: rgba(0, 0, 0, 0.8);
+        backdrop-filter: blur(4px);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto mt-6">
+    
+    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 flex flex-col md:flex-row justify-between items-center mb-6 shadow-lg relative overflow-hidden">
+        <div class="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
+        
+        <div class="relative z-10 text-center md:text-left mb-4 md:mb-0">
+            <h2 class="text-3xl font-bold text-white tracking-tight">{{ audit.domain }}</h2>
+            <div class="flex items-center gap-2 justify-center md:justify-start mt-1">
+                <span class="px-2 py-0.5 rounded text-xs font-mono bg-slate-900 text-slate-400 border border-slate-700">
+                    {{ audit.scan_data['ip'] }}
+                </span>
+                <span class="text-slate-500 text-xs">
+                    Technologies : {{ audit.scan_data['tech_stack']|join(', ') }}
+                </span>
+            </div>
+        </div>
+
+        <div class="text-center relative z-10 flex items-center gap-6">
+            <div class="text-right hidden md:block">
+                <div class="text-xs text-slate-500 uppercase font-semibold">Score de confiance</div>
+                <div class="text-2xl font-bold text-white">{{ audit.scan_data['numeric_score'] }}<span class="text-sm text-slate-500">/100</span></div>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <div class="text-6xl font-black {% if audit.score == 'A' %}text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.4)]{% elif audit.score == 'B' %}text-yellow-400{% else %}text-red-500{% endif %}">
+                    {{ audit.score }}
+                </div>
+                <button onclick="document.getElementById('scoreModal').showModal()" class="text-slate-500 hover:text-white transition-colors p-2 rounded-full hover:bg-slate-700">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <div class="lg:col-span-2 bg-slate-800 rounded-xl border border-slate-700/50 flex flex-col shadow-md">
+            <div class="p-5 border-b border-slate-700/50 bg-slate-800/50 rounded-t-xl flex items-center gap-2">
+                <span class="text-2xl">🤖</span>
+                <h3 class="font-bold text-white">Analyse Intelligente</h3>
+            </div>
+            <div class="p-6 flex-grow flex flex-col gap-6">
+                <div>
+                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Résumé Exécutif</h4>
+                    <p class="text-slate-300 leading-relaxed text-sm bg-slate-900/50 p-4 rounded-lg border border-slate-700/50">
+                        {{ audit.ai_report['executive'] }}
+                    </p>
+                </div>
+                <div>
+                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Points Techniques Clés</h4>
+                    <div class="text-slate-400 text-sm space-y-1">
+                        {% if audit.ai_report['technical'] is sequence and audit.ai_report['technical'] is not string %}
+                            <ul class="space-y-3">
+                                {% for point in audit.ai_report['technical'] %}
+                                    <li class="flex items-start gap-3 bg-slate-700/30 p-3 rounded hover:bg-slate-700/50 transition-colors">
+                                        <span class="text-blue-400 mt-1">🔹</span>
+                                        <span class="markdown-text text-slate-300">{{ point }}</span>
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        {% else %}
+                            <pre class="whitespace-pre-wrap font-mono bg-slate-900 p-4 rounded text-xs">{{ audit.ai_report['technical'] }}</pre>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lg:col-span-1 flex flex-col gap-6">
+            <div class="bg-slate-800 rounded-xl border border-slate-700/50 p-6 shadow-md flex-1 relative overflow-visible z-20">
+                <div class="flex items-center gap-2 mb-4">
+                    <h3 class="font-bold text-white text-sm uppercase tracking-wider">📡 Surface d'Attaque</h3>
+                    
+                    <div class="relative group">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-slate-500 hover:text-blue-400 cursor-help transition-colors"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        
+                        <div class="absolute left-1/2 -translate-x-1/2 top-6 w-64 p-3 bg-slate-900 border border-slate-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 text-xs">
+                            <div class="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 border-t border-l border-slate-700 rotate-45"></div>
+                            <ul class="space-y-2 text-slate-300">
+                                <li><strong class="text-blue-400">SSL/MITM :</strong> Empêche le vol de données (Cadenas).</li>
+                                <li><strong class="text-blue-400">Anti-XSS :</strong> Bloque les scripts pirates sur le site.</li>
+                                <li><strong class="text-blue-400">Clickjack :</strong> Empêche les clics invisibles piégés.</li>
+                                <li><strong class="text-blue-400">Sniffing :</strong> Empêche les fichiers déguisés (Virus).</li>
+                                <li><strong class="text-blue-400">WAF/CDN :</strong> Bouclier global du serveur.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="relative h-48 w-full flex items-center justify-center">
+                    <canvas id="securityRadar"></canvas>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 rounded-xl border border-slate-700/50 p-6 shadow-md flex-1 overflow-y-auto max-h-64">
+                <h3 class="font-bold text-white mb-4 flex items-center gap-2 text-sm uppercase tracking-wider">📊 Calcul du Score</h3>
+                <ul class="space-y-2 text-[11px]">
+                    {% for detail in audit.scan_data['score_details'] %}
+                    <li class="flex justify-between items-center pb-2 border-b border-slate-700/50 last:border-0">
+                        <span class="text-slate-300">{{ detail.split(':')[1]|default(detail) }}</span>
+                        {% if '+' in detail %}
+                            <span class="text-emerald-400 font-bold bg-emerald-400/10 px-1.5 py-0.5 rounded">{{ detail.split(' ')[0] }}</span>
+                        {% else %}
+                            <span class="text-red-400 font-bold bg-red-400/10 px-1.5 py-0.5 rounded">{{ detail.split(' ')[0] }}</span>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="lg:col-span-1 bg-slate-800 rounded-xl border border-slate-700/50 p-6 shadow-md">
+            <h3 class="font-bold text-white mb-6 border-b border-slate-700 pb-2">🏗️ Infrastructure</h3>
+            
+            <div class="space-y-6">
+                <div>
+                    <div class="text-xs text-slate-500 uppercase font-semibold">Protection Détectée</div>
+                    <div class="{% if 'Non détecté' not in audit.scan_data['waf_detected'] %}text-emerald-400{% else %}text-slate-400{% endif %} font-bold mt-1 text-sm leading-tight">
+                        {{ audit.scan_data['waf_detected'] }}
+                    </div>
+                </div>
+
+                <div>
+                    <div class="text-xs text-slate-500 uppercase font-semibold mb-2">Audit Cookies</div>
+                    <ul class="text-[11px] space-y-1 bg-slate-900/50 p-2 rounded border border-slate-700/30">
+                        {% for cookie in audit.scan_data['cookies_security'] %}
+                            <li class="truncate {% if '❌' in cookie or '⚠️' in cookie %}text-orange-300{% else %}text-emerald-400{% endif %}">
+                                {{ cookie }}
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+
+                <div class="flex items-center justify-between pt-2 border-t border-slate-700/30">
+                    <div>
+                        <div class="text-xs text-slate-500 uppercase font-semibold">SSL Cert</div>
+                        <div class="text-white font-bold text-xs mt-1">{{ audit.scan_data['ssl']['issuer'] }}</div>
+                    </div>
+                    <div class="text-xl">🔒</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lg:col-span-2 bg-slate-800 rounded-xl border border-slate-700/50 p-6 shadow-md">
+            <h3 class="font-bold text-white mb-6 border-b border-slate-700 pb-2 flex justify-between items-center">
+                <span>🛡️ Headers de Sécurité</span>
+            </h3>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {% for h, status in audit.scan_data['headers'].items() %}
+                <div class="flex justify-between items-center p-3 rounded-lg bg-slate-900/50 border border-slate-700/50 hover:border-slate-600 transition-all">
+                    <span class="text-sm font-mono text-slate-300">{{ h }}</span>
+                    
+                    {% if "Présent" in status or "ACTIF" in status %}
+                        <span class="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded border border-emerald-400/20 uppercase tracking-tighter">Actif</span>
+                    
+                    {% elif "Masqué" in status or "WAF" in status or "Protégé" in status %}
+                         <span class="text-[10px] font-bold text-blue-400 bg-blue-400/10 px-2 py-1 rounded border border-blue-400/20 uppercase tracking-tighter flex items-center gap-1">
+                            🛡️ Protégé
+                         </span>
+
+                    {% elif "Non vérifiable" in status or "BLOQUÉ" in status %}
+                        <span class="text-[10px] font-bold text-yellow-400 bg-yellow-400/10 px-2 py-1 rounded border border-yellow-400/20 uppercase tracking-tighter">Bloqué</span>
+
+                    {% else %}
+                        <span class="text-[10px] font-bold text-red-400 bg-red-400/10 px-2 py-1 rounded border border-red-400/20 uppercase tracking-tighter">Manquant</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<dialog id="scoreModal" class="bg-slate-900 text-white rounded-xl border border-slate-700 p-0 max-w-lg w-full shadow-2xl overflow-hidden">
+    <div class="p-6">
+        <div class="flex justify-between items-center mb-6 border-b border-slate-700 pb-4">
+            <h3 class="text-xl font-bold">Barème SecuScope</h3>
+            <button onclick="document.getElementById('scoreModal').close()" class="text-slate-400 hover:text-white text-2xl">&times;</button>
+        </div>
+        <div class="space-y-4">
+            <div class="flex gap-4 p-3 rounded bg-emerald-900/20 border border-emerald-500/20 items-center">
+                <div class="text-3xl font-black text-emerald-400 w-12 text-center">A</div>
+                <p class="text-xs text-slate-300">Sécurité maximale. SSL valide, WAF actif ou blocage intelligent détecté.</p>
+            </div>
+            <div class="flex gap-4 p-3 rounded bg-yellow-900/20 border border-yellow-500/20 items-center">
+                <div class="text-3xl font-black text-yellow-400 w-12 text-center">B</div>
+                <p class="text-xs text-slate-300">Poste robuste. SSL valide mais quelques headers mineurs absents.</p>
+            </div>
+            <div class="flex gap-4 p-3 rounded bg-red-900/20 border border-red-500/20 items-center">
+                <div class="text-3xl font-black text-red-500 w-12 text-center">F</div>
+                <p class="text-xs text-slate-300">Risques critiques. SSL invalide ou site totalement exposé.</p>
+            </div>
+        </div>
+        <button onclick="document.getElementById('scoreModal').close()" class="mt-6 w-full py-2 bg-slate-800 hover:bg-slate-700 rounded font-bold transition-colors">Fermer</button>
+    </div>
+</dialog>
+
+<script>
+    // 1. CHART JS CONFIGURATION
+    const ctx = document.getElementById('securityRadar');
+    const riskData = {
+        mitm: {{ audit.ai_report['risks']['mitm'] if audit.ai_report.get('risks') else 50 }},
+        xss: {{ audit.ai_report['risks']['xss'] if audit.ai_report.get('risks') else 50 }},
+        clickjacking: {{ audit.ai_report['risks']['clickjacking'] if audit.ai_report.get('risks') else 50 }},
+        sniffing: {{ audit.ai_report['risks']['sniffing'] if audit.ai_report.get('risks') else 50 }},
+        waf: {{ audit.ai_report['risks']['waf'] if audit.ai_report.get('risks') else 50 }}
+    };
+
+    new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: ['SSL/MITM', 'Anti-XSS', 'Clickjack', 'Sniffing', 'WAF/CDN'],
+            datasets: [{
+                label: 'Score',
+                data: [riskData.mitm, riskData.xss, riskData.clickjacking, riskData.sniffing, riskData.waf],
+                backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                borderColor: '#3b82f6',
+                borderWidth: 2,
+                pointBackgroundColor: '#1e293b',
+                pointBorderColor: '#60a5fa',
+                pointRadius: 3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                r: {
+                    angleLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                    grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                    pointLabels: { color: '#94a3b8', font: { size: 9 } },
+                    ticks: { display: false },
+                    suggestedMin: 0, suggestedMax: 100
+                }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+
+    // 2. MARKDOWN FIX (Bold text)
+    // Transforme **texte** en <strong class="text-white font-bold">texte</strong>
+    document.querySelectorAll('.markdown-text').forEach(el => {
+        el.innerHTML = el.textContent.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
+    });
+</script>
+{% endblock %}

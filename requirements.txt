@@ -1,0 +1,9 @@
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+requests==2.31.0
+google-genai>=0.3.0
+pydantic==2.5.2
+dnspython==2.4.2
+gunicorn==21.2.0

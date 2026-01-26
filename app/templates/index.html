@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+    /* Animation du Spinner */
+    .loader {
+        border: 3px solid rgba(30, 41, 59, 0.5); /* Slate 800 transparent */
+        border-top: 3px solid #3b82f6; /* Blue 500 */
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    /* Classe utilitaire pour cacher */
+    .hidden { display: none !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex flex-col items-center justify-center h-[80vh]">
+    <div class="text-center max-w-2xl w-full px-4">
+        
+        <h1 class="text-5xl font-extrabold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+            Votre Agent de sécurité 2.0
+        </h1>
+        <p class="text-slate-400 text-lg mb-8">
+            Analysez instantanément votre posture de sécurité (WAF, SSL, DNS). 
+            Sans intrusion. Propulsé par l'IA.
+        </p>
+        
+        <form method="POST" id="scanForm" class="w-full max-w-lg mx-auto flex gap-2 relative z-10">
+            <input type="text" name="domain" placeholder="example.com" required
+                class="flex-1 p-4 rounded-lg bg-slate-800 border border-slate-700 text-white focus:ring-2 focus:ring-blue-500 outline-none placeholder-slate-500 transition-all">
+            
+            <button type="submit" id="scanBtn"
+                class="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-[0_0_20px_rgba(37,99,235,0.3)] hover:shadow-[0_0_30px_rgba(37,99,235,0.5)] whitespace-nowrap">
+                Scanner
+            </button>
+        </form>
+        
+        <div id="loadingMessage" class="hidden mt-6 transition-all duration-300 ease-in-out">
+            <div class="flex flex-col items-center justify-center gap-3">
+                <div class="loader"></div>
+                <div class="text-sm text-slate-400 animate-pulse font-mono">
+                    Initialisation des sondes... Analyse en cours...
+                </div>
+            </div>
+        </div>
+        
+        <div class="mt-12 flex justify-center gap-6 text-xs text-slate-500 font-mono tracking-wide">
+            <span class="flex items-center gap-1"><span class="text-emerald-500">🔒</span> Analyse Passive</span>
+            <span class="flex items-center gap-1"><span class="text-blue-500">🛡️</span> WAF Logs</span>
+            <span class="flex items-center gap-1"><span class="text-purple-500">🤖</span> AI Report</span>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    document.getElementById('scanForm').addEventListener('submit', function() {
+        // 1. On récupère les éléments
+        const btn = document.getElementById('scanBtn');
+        const loader = document.getElementById('loadingMessage');
+        const input = this.querySelector('input');
+
+        // 2. On change l'état visuel (Feedback immédiat)
+        btn.innerHTML = 'Scan en cours...';
+        btn.classList.add('opacity-75', 'cursor-not-allowed');
+        input.classList.add('opacity-50');
+        
+        // 3. On affiche le loader
+        loader.classList.remove('hidden');
+    });
+</script>
+{% endblock %}
