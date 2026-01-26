@@ -9,15 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# --- CONFIGURATION ---
+
 TIMEOUT = 5
 UA_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ==============================================================================
-# 🧠 BASES DE DONNÉES DE SIGNATURES (Le Cerveau du Scanner)
-# ==============================================================================
 
-# 1. DÉTECTION PAR HEADERS HTTP (WAF classiques)
 WAF_SIGNATURES = {
     "Cloudflare": ["cf-ray", "__cfduid", "cf-cache-status", "cloudflare"],
     "Akamai": ["x-akamai", "akamai-origin-hop", "akamai", "x-akamai-request-id"],
@@ -41,8 +37,6 @@ WAF_SIGNATURES = {
     "Oracle Cloud": ["oracle", "x-oracle-dms"]
 }
 
-# 2. DÉTECTION PAR INFRASTRUCTURE (SSL Issuer + Reverse DNS)
-# C'est ici qu'on ajoute les Clouds pour l'inférence dynamique sans toucher au code logique.
 INFRA_SIGNATURES = {
     "Google": {
         "issuers": ["Google Trust Services", "GTS CA"],
@@ -63,7 +57,7 @@ INFRA_SIGNATURES = {
         "tech": "Azure Cloud"
     },
     "Oracle Cloud": {
-        "issuers": ["Oracle Corporation", "DigiCert Global Root G2"], # Souvent DigiCert pour Oracle
+        "issuers": ["Oracle Corporation", "DigiCert Global Root G2"],
         "dns": ["oraclecloud.com", "oracle.com", "oci.oraclecloud.com"],
         "waf": "Oracle OCI WAF",
         "tech": "Oracle Infrastructure"
@@ -130,7 +124,7 @@ INFRA_SIGNATURES = {
     }
 }
 
-# 3. SIGNATURES TECHNOLOGIES (Body/Headers)
+
 TECH_SIGNATURES = {
     "Nginx": ["nginx"],
     "Apache": ["apache"],
@@ -145,7 +139,7 @@ TECH_SIGNATURES = {
     "Ruby": ["passenger", "thin", "mongrel", "ruby"]
 }
 
-# 4. HEADERS DE SÉCURITÉ
+
 SECURITY_HEADERS = {
     "Strict-Transport-Security": "HSTS",
     "Content-Security-Policy": "CSP",
@@ -155,9 +149,7 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "Permissions"
 }
 
-# ==============================================================================
-# 🛠️ FONCTIONS UTILITAIRES
-# ==============================================================================
+
 
 def check_tcp_port(domain, port=443):
     try:
@@ -358,21 +350,20 @@ def analyze_target(domain):
     if dns_d.get("error"):
         return {"scan_data": {"numeric_score": 0}, "error": "Domaine introuvable", "domain": domain, "ip": "N/A", "ssl": {"valid": False}, "waf_detected": "N/A", "headers": {}, "cookies_security": [], "tech_stack": [], "score_details": [], "missing_headers": []}
 
-    # --- LOGIQUE D'INFÉRENCE WAF (BOUCLE UNIVERSELLE) ---
+    
     current_waf = http_d.get("waf", "Non détecté")
     
     if "Non détecté" in current_waf:
         issuer = str(ssl_d.get("issuer", ""))
         ptr = str(dns_d.get("ptr", ""))
         
-        # On boucle sur la base de données INFRA_SIGNATURES
-        # Cela remplace tous les if/elif hardcodés
+        
         for provider, sigs in INFRA_SIGNATURES.items():
             
-            # 1. Vérification SSL (Emetteur)
+            
             ssl_match = any(s.lower() in issuer.lower() for s in sigs["issuers"])
             
-            # 2. Vérification DNS (PTR)
+            
             dns_match = any(s.lower() in ptr.lower() for s in sigs["dns"])
             
             if ssl_match or dns_match:
@@ -380,15 +371,15 @@ def analyze_target(domain):
                 source = "SSL" if ssl_match else "DNS"
                 http_d["details"].append(f"+10 pts: Infrastructure {provider} détectée ({source})")
                 
-                # Ajout Tech stack si définie
+                
                 if "tech" in sigs and sigs["tech"] not in http_d["tech"]:
                     http_d["tech"].append(sigs["tech"])
                     
-                break # On s'arrête à la première correspondance
+                break 
 
         http_d["waf"] = current_waf
 
-    # Agrégation
+    
     unique_tech = list(set(http_d["tech"]))
     if not unique_tech and "Inaccessible" not in http_d["waf"]: unique_tech = ["Obfusqué (Sécurisé)"]
 
