@@ -3,17 +3,17 @@ import ssl
 import socket
 import dns.resolver
 import dns.reversename
-import re
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from fake_useragent import UserAgent  # Nouvelle librairie
 
-
+# Configuration
 TIMEOUT = 5
-UA_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+ua = UserAgent() # Initialisation du générateur d'User-Agent
 
-
+# --- SIGNATURES (WAF & INFRA) ---
 WAF_SIGNATURES = {
     "Cloudflare": ["cf-ray", "__cfduid", "cf-cache-status", "cloudflare"],
     "Akamai": ["x-akamai", "akamai-origin-hop", "akamai", "x-akamai-request-id"],
@@ -21,124 +21,34 @@ WAF_SIGNATURES = {
     "Varnish": ["x-varnish", "varnish"],
     "AWS CloudFront": ["x-amz-cf-id", "cloudfront", "x-amz-id-2"],
     "Google Edge": ["gws", "esf", "sffe", "x-goog-"],
-    "Facebook Proxygen": ["proxygen", "x-fb-debug"],
     "Imperva": ["incap-ses", "visid_incap", "x-iinfo", "x-cdn"],
-    "Sucuri": ["x-sucuri", "sucuri"],
     "Azure": ["x-azure-ref", "azure"],
     "F5 BIG-IP": ["bigip", "f5_cspm"],
-    "Barracuda": ["barra_counter_session", "bnjb"],
-    "Citrix": ["ns_af", "citrix_ns_id"],
-    "ArvanCloud": ["arvancloud"],
-    "Reblaze": ["x-reblaze"],
+    "Sucuri": ["x-sucuri", "sucuri"],
     "ModSecurity": ["mod_security", "nysobluewaf"],
+    "DDOS-GUARD": ["ddos-guard"],
     "StackPath": ["x-stackpath"],
-    "Zscaler": ["zscaler"],
-    "Fortinet": ["fortiwaf"],
-    "Oracle Cloud": ["oracle", "x-oracle-dms"]
+    "Zscaler": ["zscaler"]
 }
 
 INFRA_SIGNATURES = {
-    "Google": {
-        "issuers": ["Google Trust Services", "GTS CA"],
-        "dns": ["1e100.net", "googleusercontent.com", "google.com", "bc.googleusercontent.com"],
-        "waf": "Google Edge / GWS",
-        "tech": "Google Server"
-    },
-    "AWS": {
-        "issuers": ["Amazon"],
-        "dns": ["cloudfront.net", "awsglobalaccelerator.com", "amazonaws.com", "compute.amazonaws.com"],
-        "waf": "AWS CloudFront",
-        "tech": "AWS Infrastructure"
-    },
-    "Microsoft Azure": {
-        "issuers": ["Microsoft Corporation", "Microsoft Azure"],
-        "dns": ["azure.com", "azure-dns.com", "trafficmanager.net", "azureedge.net"],
-        "waf": "Azure Front Door",
-        "tech": "Azure Cloud"
-    },
-    "Oracle Cloud": {
-        "issuers": ["Oracle Corporation", "DigiCert Global Root G2"],
-        "dns": ["oraclecloud.com", "oracle.com", "oci.oraclecloud.com"],
-        "waf": "Oracle OCI WAF",
-        "tech": "Oracle Infrastructure"
-    },
-    "Cloudflare": {
-        "issuers": ["Cloudflare"],
-        "dns": ["cloudflare.com"], 
-        "waf": "Cloudflare",
-        "tech": "Cloudflare CDN"
-    },
-    "Fastly": {
-        "issuers": ["Fastly"],
-        "dns": ["fastly.net", "fastlylb.net"],
-        "waf": "Fastly Edge",
-        "tech": "Varnish Cache"
-    },
-    "Akamai": {
-        "issuers": ["Akamai"],
-        "dns": ["akamaitechnologies.com", "akamai.net", "akamaiedge.net"],
-        "waf": "Akamai Edge",
-        "tech": "Akamai CDN"
-    },
-    "Vercel": {
-        "issuers": ["Vercel"],
-        "dns": ["vercel.com", "vercel-dns.com"],
-        "waf": "Vercel Edge",
-        "tech": "Next.js / Vercel"
-    },
-    "Netlify": {
-        "issuers": ["Netlify"],
-        "dns": ["netlify.com"],
-        "waf": "Netlify Edge",
-        "tech": "Netlify"
-    },
-    "Heroku": {
-        "issuers": ["Heroku"],
-        "dns": ["herokuapp.com"],
-        "waf": "Heroku Router",
-        "tech": "Heroku Dyno"
-    },
-    "Shopify": {
-        "issuers": ["Shopify"],
-        "dns": ["myshopify.com", "shopify.com"],
-        "waf": "Shopify Cloud",
-        "tech": "Ruby on Rails (Shopify)"
-    },
-    "DigitalOcean": {
-        "issuers": ["DigitalOcean"],
-        "dns": ["digitalocean.com"],
-        "waf": "DigitalOcean Load Balancer",
-        "tech": "DigitalOcean Droplet"
-    },
-    "Alibaba Cloud": {
-        "issuers": ["Alibaba", "GlobalSign"],
-        "dns": ["alicdn.com", "kunlun"],
-        "waf": "Alibaba WAF",
-        "tech": "Alibaba Cloud"
-    },
-    "IBM Cloud": {
-        "issuers": ["DigiCert"], 
-        "dns": ["softlayer.com", "bluemix.net"],
-        "waf": "IBM CIS",
-        "tech": "IBM Cloud"
-    }
+    "Google": {"issuers": ["Google Trust Services", "GTS CA"], "dns": ["google", "1e100.net"], "waf": "Google Edge"},
+    "AWS": {"issuers": ["Amazon"], "dns": ["amazonaws", "cloudfront"], "waf": "AWS CloudFront"},
+    "Microsoft": {"issuers": ["Microsoft"], "dns": ["azure", "trafficmanager"], "waf": "Azure Front Door"},
+    "Cloudflare": {"issuers": ["Cloudflare"], "dns": ["cloudflare"], "waf": "Cloudflare"},
+    "Vercel": {"issuers": ["Vercel", "Let's Encrypt"], "dns": ["vercel"], "waf": "Vercel Edge"},
+    "Netlify": {"issuers": ["Netlify"], "dns": ["netlify"], "waf": "Netlify Edge"},
+    "Heroku": {"issuers": ["Heroku"], "dns": ["herokuapp"], "waf": "Heroku Router"},
+    "Shopify": {"issuers": ["Shopify"], "dns": ["shopify"], "waf": "Shopify Cloud"}
 }
-
 
 TECH_SIGNATURES = {
-    "Nginx": ["nginx"],
-    "Apache": ["apache"],
-    "LiteSpeed": ["litespeed"],
-    "Caddy": ["caddy"],
-    "IIS": ["iis", "microsoft-iis"],
-    "PHP": ["php", "phpsessid"],
-    "ASP.NET": ["asp.net", "asp.net_sessionid", "x-aspnet-version"],
-    "Java": ["jsessionid", "tomcat", "jetty", "jboss"],
-    "Node.js": ["express", "connect.sid", "node.js"],
-    "Python": ["gunicorn", "werkzeug", "python", "django", "flask"],
-    "Ruby": ["passenger", "thin", "mongrel", "ruby"]
+    "Nginx": ["nginx"], "Apache": ["apache"], "LiteSpeed": ["litespeed"],
+    "Caddy": ["caddy"], "IIS": ["iis", "microsoft-iis"],
+    "PHP": ["php", "phpsessid"], "ASP.NET": ["asp.net"],
+    "Java": ["jsessionid", "tomcat", "jetty"], "Node.js": ["express", "node.js", "connect.sid"],
+    "Python": ["gunicorn", "werkzeug", "python", "django", "flask"]
 }
-
 
 SECURITY_HEADERS = {
     "Strict-Transport-Security": "HSTS",
@@ -149,7 +59,15 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "Permissions"
 }
 
-
+def get_random_headers():
+    """Génère des headers pour ressembler à un vrai navigateur"""
+    return {
+        "User-Agent": ua.random,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
 
 def check_tcp_port(domain, port=443):
     try:
@@ -158,7 +76,7 @@ def check_tcp_port(domain, port=443):
         result = sock.connect_ex((domain, port))
         sock.close()
         return result == 0
-    except:
+    except Exception:
         return False
 
 def get_dns_info(domain):
@@ -167,37 +85,49 @@ def get_dns_info(domain):
         answers = dns.resolver.resolve(domain, 'A')
         ip = answers[0].to_text()
         res["ip"] = ip
-        
-        # PTR Check (Reverse DNS)
         try:
             rev_name = dns.reversename.from_address(ip)
             ptr_answers = dns.resolver.resolve(rev_name, "PTR")
             res["ptr"] = ptr_answers[0].to_text().lower()
-        except:
-            pass
-
+        except Exception:
+            pass # Pas de PTR, ce n'est pas critique
     except dns.resolver.NXDOMAIN:
         res["details"].append("-100 pts: Domaine inexistant (NXDOMAIN)")
         res["error"] = True
-    except dns.resolver.NoAnswer:
-        res["details"].append("-10 pts: Pas d'enregistrement A (DNS Privé ?)")
     except Exception as e:
-        pass
+        res["details"].append(f"-10 pts: Erreur DNS ({str(e)})")
+        # On ne met pas error=True ici pour tenter quand même le HTTP via le domaine
     
     return res
 
 def get_ssl_info(domain):
     result = {"valid": False, "issuer": "Inconnu", "expiry": "N/A", "details": []}
     
+    # Pré-check TCP
     if not check_tcp_port(domain, 443):
         result["details"].append("-20 pts: Port 443 Fermé (Pas de HTTPS)")
         return result
 
     try:
         ctx = ssl.create_default_context()
+        ctx.check_hostname = False # On gère l'erreur manuellement pour avoir plus de détails
+        ctx.verify_mode = ssl.CERT_NONE # Idem, on veut juste lire le cert
+        
+        # Connexion sécurisée avec timeout court
+        with socket.create_connection((domain, 443), timeout=TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert(binary_form=False) # Si CERT_NONE, getpeercert retourne rien souvent, il faut ajuster
+                
+                # Pour récupérer les infos proprement, on doit souvent valider.
+                # Nouvelle approche plus robuste :
+                pass
+        
+        # Approche standard "safe"
+        ctx = ssl.create_default_context()
         with socket.create_connection((domain, 443), timeout=TIMEOUT) as sock:
             with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
                 cert = ssock.getpeercert()
+                
                 issuer = dict(x[0] for x in cert['issuer'])
                 common = issuer.get('commonName', '')
                 org = issuer.get('organizationName', '')
@@ -208,19 +138,20 @@ def get_ssl_info(domain):
                 result["expiry"] = cert['notAfter']
                 result["details"].append("+20 pts: Certificat SSL Valide")
                 
-                if any(x in str(final_name) for x in ["DigiCert", "GlobalSign", "Entrust", "Sectigo", "Amazon", "Google"]):
+                # Bonus pour les gros CA
+                if any(x in str(final_name) for x in ["DigiCert", "GlobalSign", "Entrust", "Amazon", "Google", "Let's Encrypt"]):
                     result["details"].append("+5 pts: Autorité de Certification Reconnue")
 
     except ssl.SSLError:
         result["error"] = "Certificat Invalide"
-        result["details"].append("-20 pts: Certificat SSL Invalide")
+        result["details"].append("-20 pts: Certificat SSL Invalide ou Expiré")
     except socket.timeout:
         result["valid"] = True 
-        result["issuer"] = "Masqué par WAF"
-        result["details"].append("+20 pts: Handshake SSL Filtré (Protection Active)")
+        result["issuer"] = "Inconnu (Timeout)"
+        result["details"].append("+10 pts: SSL lent ou filtré (Timeout)")
     except Exception as e:
         result["error"] = str(e)
-        result["details"].append("-10 pts: Erreur Connexion SSL")
+        result["details"].append("-10 pts: Erreur Handshake SSL")
     return result
 
 def get_http_info(target_url, domain):
@@ -230,107 +161,90 @@ def get_http_info(target_url, domain):
     }
     
     session = requests.Session()
-    retry = Retry(total=2, backoff_factor=0.5)
+    retry = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('https://', adapter)
     session.mount('http://', adapter)
 
     try:
-        # Redirect Check
+        # 1. Vérification redirection HTTP -> HTTPS
         try:
-            r_red = requests.get(f"http://{domain}", headers={"User-Agent": UA_CHROME}, timeout=3, allow_redirects=False)
-            if r_red.status_code in [301, 302, 307, 308] and r_red.headers.get('Location', '').startswith('https://'):
+            r_red = requests.get(f"http://{domain}", headers=get_random_headers(), timeout=3, allow_redirects=False)
+            if r_red.status_code in [301, 302, 308] and "https://" in r_red.headers.get('Location', ''):
                 res["details"].append("+5 pts: Force HTTPS (Redirection OK)")
             elif r_red.status_code == 200:
-                 res["details"].append("-10 pts: HTTPS non forcé")
+                 res["details"].append("-10 pts: HTTP accessible sans redirection")
                  res["tech"].append("HTTP Allowed")
-        except: pass
+        except Exception:
+            pass
 
-        # Main Request
-        resp = session.get(target_url, headers={"User-Agent": UA_CHROME}, timeout=TIMEOUT, allow_redirects=True)
-        final_headers = {k.lower(): v for k, v in resp.headers.items()}
+        # 2. Requête principale
+        resp = session.get(target_url, headers=get_random_headers(), timeout=TIMEOUT, allow_redirects=True)
+        headers_lower = {k.lower(): v for k, v in resp.headers.items()}
         res["server"] = resp.headers.get("Server", "Masqué")
         
-        # Tech Analysis (Headers)
-        raw_data = (res["server"] + " " + final_headers.get("x-powered-by", "") + " " + " ".join([c.name for c in resp.cookies])).lower()
+        # Analyse Technologies
+        raw_data = (res["server"] + " " + headers_lower.get("x-powered-by", "")).lower()
         for tech, sigs in TECH_SIGNATURES.items():
-            for sig in sigs:
-                if sig in raw_data and tech not in res["tech"]: res["tech"].append(tech)
+            if any(sig in raw_data for sig in sigs) and tech not in res["tech"]:
+                res["tech"].append(tech)
 
-        # WAF Detection (Headers)
+        # Détection WAF (Headers + Cookies + Contenu erreur)
         waf_signals = []
-        blocked = False
-        if resp.status_code in [403, 406, 429, 503]:
-            txt = resp.text.lower()
-            if "captcha" in txt or "security" in txt or "forbidden" in txt:
-                waf_signals.append("🛡️ Protection Active")
-                res["details"].append("+20 pts: WAF Bloquant")
-                blocked = True
-
-        via = final_headers.get("via", "").lower()
-        for waf, sigs in WAF_SIGNATURES.items():
-            for sig in sigs:
-                if any(sig in h for h in final_headers) or sig in raw_data or sig in via:
-                    waf_signals.append(waf)
-                    break
+        is_blocked = resp.status_code in [403, 406, 429]
         
+        if is_blocked:
+            res["details"].append("+20 pts: Comportement WAF détecté (Blocage)")
+        
+        for waf, sigs in WAF_SIGNATURES.items():
+            # Check Headers
+            if any(sig in h for h in headers_lower for sig in sigs):
+                waf_signals.append(waf)
+                continue
+            # Check Cookies (parfois les cookies trahissent le WAF)
+            for cookie in resp.cookies:
+                if any(sig in cookie.name.lower() for sig in sigs):
+                    waf_signals.append(waf)
+
         if waf_signals:
             res["waf"] = ", ".join(list(set(waf_signals)))
-            if not blocked: res["details"].append(f"+10 pts: Infrastructure WAF détectée")
+            if not is_blocked: res["details"].append(f"+10 pts: Signature WAF trouvée ({res['waf']})")
 
-        # Cookies
+        # Analyse Cookies
         if resp.cookies:
             for c in resp.cookies:
                 issues = []
-                is_csrf = any(x in c.name.lower() for x in ["csrf", "xsrf", "token", "id"])
+                is_csrf = any(x in c.name.lower() for x in ["csrf", "xsrf", "token"])
                 if not c.secure: issues.append("Manque Secure")
                 if not c.has_nonstandard_attr('HttpOnly') and not is_csrf: issues.append("Manque HttpOnly")
+                
                 if issues: res["cookies"].append(f"{c.name}: ❌ {', '.join(issues)}")
-                else: res["cookies"].append(f"{c.name}: ✅ Sécurisé")
-        else: res["cookies"].append("Pas de cookies")
+                else: res["cookies"].append(f"{c.name}: ✅ OK")
+        else:
+            res["cookies"].append("Aucun cookie")
 
-        # Headers
+        # Analyse Headers de Sécurité
         for h_real, h_name in SECURITY_HEADERS.items():
-            if h_real.lower() in final_headers:
+            if h_real.lower() in headers_lower:
                 res["headers"][h_name] = "✅ Présent"
                 res["details"].append(f"+5 pts: {h_name}")
             else:
-                if blocked: res["headers"][h_name] = "🔒 WAF Géré"
-                else:
-                    res["headers"][h_name] = "❌ Manquant"
-                    res["missing"].append(h_name)
-                    res["details"].append(f"-5 pts: {h_name} manquant")
+                res["headers"][h_name] = "❌ Manquant"
+                res["missing"].append(h_name)
+                res["details"].append(f"-5 pts: {h_name} manquant")
 
-    except:
-        # Fallback Analysis
-        is_443 = check_tcp_port(domain, 443)
-        http_ok = False
-        try:
-            if requests.get(f"http://{domain}", timeout=3).status_code < 500: http_ok = True
-        except: pass
-
-        if http_ok:
-            res["waf"], res["server"] = "N/A", "Non Sécurisé"
-            res["details"].extend(["-100 pts: DANGER - Site HTTP Only", "-20 pts: Données en clair"])
-            for _, h in SECURITY_HEADERS.items(): res["headers"][h] = "⚠️ Non Chiffré"
-            res["cookies"].append("Non Chiffrés")
-            res["tech"].append("HTTP Legacy")
-        elif is_443:
-            res["waf"], res["server"] = "🏰 Forteresse", "Protégé"
-            res["details"].extend(["+30 pts: Filtrage Trafic", "+10 pts: Site Furtif"])
-            for _, h in SECURITY_HEADERS.items(): res["headers"][h] = "🛡️ Masqué"
-            res["cookies"].append("Protégé")
-            res["tech"].append("Firewall Avancé")
-        else:
-            res["waf"] = "N/A"
-            res["details"].append("-50 pts: Site Inaccessible")
-            for _, h in SECURITY_HEADERS.items(): res["headers"][h] = "⚠️ Down"
+    except requests.exceptions.SSLError:
+        res["details"].append("-20 pts: Erreur SSL critique lors de la connexion")
+    except requests.exceptions.ConnectionError:
+        res["details"].append("-50 pts: Site inaccessible ou connexion refusée")
+    except Exception as e:
+        res["details"].append(f"-10 pts: Erreur analyse HTTP ({str(e)})")
 
     return res
 
 def analyze_target(domain):
     """
-    Orchestrateur avec Inférence Infrastructure Générique (V5)
+    Orchestrateur Principal
     """
     if not domain.startswith('http'):
         target_url = f"https://{domain}"
@@ -338,6 +252,7 @@ def analyze_target(domain):
         target_url = domain
         domain = urlparse(target_url).netloc
 
+    # Exécution parallèle
     with ThreadPoolExecutor(max_workers=3) as executor:
         f_dns = executor.submit(get_dns_info, domain)
         f_ssl = executor.submit(get_ssl_info, domain)
@@ -347,41 +262,30 @@ def analyze_target(domain):
         ssl_d = f_ssl.result()
         http_d = f_http.result()
 
+    # Si DNS échoue totalement, on arrête
     if dns_d.get("error"):
-        return {"scan_data": {"numeric_score": 0}, "error": "Domaine introuvable", "domain": domain, "ip": "N/A", "ssl": {"valid": False}, "waf_detected": "N/A", "headers": {}, "cookies_security": [], "tech_stack": [], "score_details": [], "missing_headers": []}
+        return {
+            "domain": domain, "ip": "N/A", "ssl": {"valid": False}, 
+            "waf_detected": "Inconnu", "headers": {}, "cookies_security": [], 
+            "tech_stack": [], "score_details": dns_d["details"], 
+            "missing_headers": [], "scan_data": {"numeric_score": 0}
+        }
 
-    
+    # Inférence Infrastructure (si le WAF n'est pas détecté par headers)
     current_waf = http_d.get("waf", "Non détecté")
-    
     if "Non détecté" in current_waf:
         issuer = str(ssl_d.get("issuer", ""))
         ptr = str(dns_d.get("ptr", ""))
         
-        
         for provider, sigs in INFRA_SIGNATURES.items():
+            is_ssl = any(s.lower() in issuer.lower() for s in sigs["issuers"])
+            is_dns = any(s.lower() in ptr.lower() for s in sigs["dns"])
             
-            
-            ssl_match = any(s.lower() in issuer.lower() for s in sigs["issuers"])
-            
-            
-            dns_match = any(s.lower() in ptr.lower() for s in sigs["dns"])
-            
-            if ssl_match or dns_match:
-                current_waf = sigs["waf"]
-                source = "SSL" if ssl_match else "DNS"
-                http_d["details"].append(f"+10 pts: Infrastructure {provider} détectée ({source})")
-                
-                
-                if "tech" in sigs and sigs["tech"] not in http_d["tech"]:
-                    http_d["tech"].append(sigs["tech"])
-                    
-                break 
-
+            if is_ssl or is_dns:
+                current_waf = f"{sigs['waf']} (Inféré)"
+                http_d["details"].append(f"+10 pts: Infrastructure {provider} détectée")
+                break
         http_d["waf"] = current_waf
-
-    
-    unique_tech = list(set(http_d["tech"]))
-    if not unique_tech and "Inaccessible" not in http_d["waf"]: unique_tech = ["Obfusqué (Sécurisé)"]
 
     return {
         "domain": domain,
@@ -392,6 +296,6 @@ def analyze_target(domain):
         "headers": http_d["headers"],
         "missing_headers": http_d["missing"],
         "cookies_security": http_d["cookies"],
-        "tech_stack": unique_tech,
+        "tech_stack": list(set(http_d["tech"])),
         "score_details": dns_d["details"] + ssl_d["details"] + http_d["details"]
     }
