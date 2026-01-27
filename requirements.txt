@@ -10,3 +10,4 @@ dnspython==2.4.2
 gunicorn==21.2.0
 validators==0.22.0
 fake-useragent==1.5.1
+wafw00f==2.2.0

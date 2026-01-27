@@ -1,4 +1,5 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask import Blueprint, render_template, request, redirect, url_for, flash 
+
 import validators
 
 from app.services.scanner import analyze_target
@@ -21,6 +22,11 @@ def index():
 
     
         scan_res = analyze_target(domain)
+
+        if scan_res.get('error') == "NXDOMAIN":
+            flash(f"Le domaine '{domain}' est introuvable ou n'existe pas.", "error")
+            return redirect(url_for('main.index'))
+        
         ai_res = generate_report(scan_res)
         score_data = calculate_trust_score(scan_res)
         

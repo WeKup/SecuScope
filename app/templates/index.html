@@ -22,7 +22,6 @@
 {% block content %}
 <div class="flex flex-col items-center justify-center h-[80vh]">
     <div class="text-center max-w-2xl w-full px-4">
-        
         <h1 class="text-5xl font-extrabold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
             Votre Agent de sécurité 2.0
         </h1>
@@ -30,6 +29,19 @@
             Analysez instantanément votre posture de sécurité (WAF, SSL, DNS). 
             Sans intrusion. Propulsé par l'IA.
         </p>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="w-full max-w-lg mx-auto mb-6">
+                {% for category, message in messages %}
+                    <div class="p-4 rounded-lg bg-red-500/10 border border-red-500/50 text-red-400 text-sm font-mono flex items-center justify-center gap-2">
+                    <span>⚠️</span> {{ message }}
+                    </div>
+                {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+        
         {% if error %}
         <div class="mb-4 p-3 bg-red-500/20 border border-red-500/50 text-red-200 rounded text-center text-sm">
             {{ error }}

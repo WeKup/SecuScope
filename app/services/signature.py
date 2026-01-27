@@ -28,18 +28,19 @@ WAF_SIGNATURES = {
         "cookies": [],
         "cname": [] 
     },
+    "OVH WAF": {
+        "headers": ["x-ovh-gateway", "x-slb-id"],
+        "body": ["ovhcloud", "be1.slb.ovh.net"],
+        "cookies": [],
+        "cname": ["ovh", "anycast.me"]
+    },
     "AWS CloudFront": {
         "headers": ["x-amz-cf-id", "x-amz-cf-pop", "x-amz-id-2", "cloudfront"],
         "body": ["cloudfront"],
         "cookies": [],
         "cname": ["cloudfront", "awsglobalaccelerator"]
     },
-    "Google Edge": {
-        "headers": ["gws", "esf", "sffe", "x-goog-", "x-guploader-uploadid"],
-        "body": ["google"],
-        "cookies": [],
-        "cname": ["googleusercontent", "1e100", "googlehosted"]
-    },
+    
     "Imperva / Incapsula": {
         "headers": ["x-iinfo", "x-cdn", "x-incap-sess", "incap_ses", "visid_incap"],
         "body": ["incapsula incident id", "powered by incapsula"],
@@ -87,19 +88,99 @@ WAF_SIGNATURES = {
         "body": ["zscaler"],
         "cookies": ["zscaler"],
         "cname": ["zscaler", "zen.zscaler", "zpa", "zscloud"]
+    },
+    "Google Edge": {
+        "headers": ["gws", "esf", "sffe", "x-goog-", "x-guploader-uploadid"],
+        "body": ["google"],
+        "cookies": [],
+        "cname": ["googleusercontent", "1e100", "googlehosted"]
     }
 }
 
 
+# Utilisé en "dernier recours" si le WAF n'est pas détecté explicitement.
 INFRA_SIGNATURES = {
-    "Google": {"issuers": ["Google Trust Services", "GTS CA"], "dns": ["google", "1e100.net"], "waf": "Google Edge"},
-    "AWS": {"issuers": ["Amazon"], "dns": ["amazonaws", "cloudfront"], "waf": "AWS CloudFront"},
-    "Microsoft": {"issuers": ["Microsoft"], "dns": ["azure", "trafficmanager"], "waf": "Azure Front Door"},
-    "Cloudflare": {"issuers": ["Cloudflare"], "dns": ["cloudflare"], "waf": "Cloudflare"},
-    "Vercel": {"issuers": ["Vercel", "Let's Encrypt"], "dns": ["vercel"], "waf": "Vercel Edge"},
-    "Netlify": {"issuers": ["Netlify"], "dns": ["netlify"], "waf": "Netlify Edge"},
-    "Heroku": {"issuers": ["Heroku"], "dns": ["herokuapp"], "waf": "Heroku Router"},
-    "Shopify": {"issuers": ["Shopify"], "dns": ["shopify"], "waf": "Shopify Cloud"}
+    
+    "AWS": {
+        "issuers": ["Amazon", "Amazon.com"], 
+        "dns": ["amazonaws", "cloudfront", "awsglobalaccelerator"], 
+        "waf": "AWS CloudFront"
+    },
+    "OVH": {
+        "issuers": ["OVH", "Sectigo"], 
+        "dns": ["ovh.net", "ovh.com", "anycast.me"], 
+        "waf": "OVH Cloud Firewall"
+    },
+    "Microsoft": {
+        "issuers": ["Microsoft", "Microsoft Corporation"], 
+        "dns": ["azure", "trafficmanager", "azurefd", "azureedge"], 
+        "waf": "Azure Front Door"
+    },
+    "Cloudflare": {
+        "issuers": ["Cloudflare", "Cloudflare, Inc."], 
+        "dns": ["cloudflare"], 
+        "waf": "Cloudflare"
+    },
+    "Akamai": {
+        "issuers": ["Akamai Technologies", "Akamai"], 
+        "dns": ["akamai", "akamaiedge", "edgekey", "edgesuite", "akam.net", "akamaized.net"],  # ✅ AJOUT: "akam.net"
+        "waf": "Akamai Edge"
+    },
+    "Fastly": {
+        "issuers": ["Fastly", "Fastly, Inc."], 
+        "dns": ["fastly"], 
+        "waf": "Fastly WAF"
+    },
+    "Imperva": {
+        "issuers": ["Imperva", "Incapsula"], 
+        "dns": ["incapdns", "impervadns"], 
+        "waf": "Imperva Cloud WAF"
+    },
+    "Sucuri": {
+        "issuers": ["Sucuri"], 
+        "dns": ["sucuri"], 
+        "waf": "Sucuri Firewall"
+    },
+    "F5": {
+        "issuers": ["F5 Networks", "F5"], 
+        "dns": ["f5edge", "silverline"], 
+        "waf": "F5 Distributed Cloud"
+    },
+    "Zscaler": {
+        "issuers": ["Zscaler", "Zscaler, Inc."], 
+        "dns": ["zscaler", "zscloud"], 
+        "waf": "Zscaler Cloud"
+    },
+    "DDOS-GUARD": {
+        "issuers": ["DDOS-GUARD"], 
+        "dns": ["ddos-guard"], 
+        "waf": "DDOS-GUARD"
+    },
+    "Vercel": {
+        "issuers": ["Vercel"], 
+        "dns": ["vercel"], 
+        "waf": "Vercel Edge"
+    },
+    "Netlify": {
+        "issuers": ["Netlify"], 
+        "dns": ["netlify"], 
+        "waf": "Netlify Edge"
+    },
+    "Heroku": {
+        "issuers": ["Heroku"], 
+        "dns": ["herokuapp"], 
+        "waf": "Heroku Router"
+    },
+    "Shopify": {
+        "issuers": ["Shopify"], 
+        "dns": ["shopify"], 
+        "waf": "Shopify Cloud"
+    },
+    "Google": {
+        "issuers": ["Google Trust Services", "GTS CA", "Google"], 
+        "dns": ["google", "1e100.net", "googleusercontent"], 
+        "waf": "Google Edge"
+    }
 }
 
 TECH_SIGNATURES = {
