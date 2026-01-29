@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flex items-center justify-center min-h-[80vh]">
+    <div class="bg-slate-800 p-8 rounded-xl border border-slate-700 shadow-2xl w-full max-w-md">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-white mb-2">SecuScope Login</h1>
+            <p class="text-slate-400">Configurez votre moteur d'IA</p>
+        </div>
+        {% if error %}
+        <div class="mb-4 p-3 bg-red-500/20 border border-red-500/50 text-red-200 rounded text-center text-sm">
+            {{ error }}
+        </div>
+        {% endif %}
+        <form action="{{ url_for('main.login') }}" method="POST" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+            
+            <div>
+                <label class="block text-slate-300 text-sm font-bold mb-2">Modèle IA</label>
+                <select name="model_id" class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
+                    <option value="gemini-2.0-flash">Gemini 2.0 Flash (Rapide)</option>
+                    <option value="gemini-1.5-pro">Gemini 1.5 Pro (Précis)</option>
+                    <option value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-slate-300 text-sm font-bold mb-2">Clé API Google (Gemini)</label>
+                <input type="password" name="api_key" required placeholder="AIzaSy..." 
+                       class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
+                <p class="text-xs text-slate-500 mt-1">La clé est stockée temporairement dans votre session.</p>
+            </div>
+
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded transition-colors">
+                Accéder au Scanner
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

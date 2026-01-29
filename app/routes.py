@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash 
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session
 
 import validators
 
@@ -10,9 +10,26 @@ from app.models import db, Audit
 bp = Blueprint('main', __name__)
 
 @bp.route('/', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        api_key = request.form.get('api_key')
+        model_id = request.form.get('model_id')
+        
+        session['user_api_key'] = api_key
+        session['user_model_id'] = model_id
+        
+        return redirect(url_for('main.index'))
+    
+    return render_template('login.html')
+
+
+@bp.route('/scan', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         domain = request.form.get('domain', '').strip()
+
+        if 'user_api_key' not in session:
+            return render_template('login.html', error="Session expirée. Veuillez vous reconnecter")
         
         if not domain:
             return redirect(url_for('main.index'))
@@ -27,7 +44,7 @@ def index():
             flash(f"Le domaine '{domain}' est introuvable ou n'existe pas.", "error")
             return redirect(url_for('main.index'))
         
-        ai_res = generate_report(scan_res)
+        ai_res = generate_report(scan_res, api_key=session['user_api_key'],model_id=session['user_model_id'])
         score_data = calculate_trust_score(scan_res)
         
         scan_res['numeric_score'] = score_data['numeric']
@@ -50,3 +67,9 @@ def index():
 def dashboard(audit_id):
     audit = Audit.query.get_or_404(audit_id)
     return render_template('dashboard.html', audit=audit)
+
+@bp.route('/logout')
+def logout():
+    session.clear()
+    flash("Session IA fermée avec succès.", "info")
+    return redirect(url_for('main.login'))

@@ -1,9 +1,9 @@
 from google import genai
-import os
+import logging
 import json
-
-def generate_report(scan_data):
-    api_key = os.getenv("GOOGLE_API_KEY")
+logger = logging.getLogger(__name__)
+def generate_report(scan_data,api_key, model_id):
+    
     
     if not api_key:
         return {"executive": "Pas de clé", "technical": [], "risks": {}}
@@ -28,7 +28,7 @@ def generate_report(scan_data):
         """
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_id,
             contents=prompt
         )
         
@@ -36,7 +36,7 @@ def generate_report(scan_data):
         return json.loads(clean_text)
 
     except Exception as e:
-        print(f"Erreur GenAI : {e}")
+        logger.error(f"Erreur GenAI ({model_id}) : {e}")
         return {
             "executive": "Erreur IA", 
             "technical": [str(e)],
