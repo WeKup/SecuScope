@@ -1,4 +1,4 @@
-import requests
+from curl_cffi import requests
 import ssl
 import socket
 import dns.resolver
@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from app.services.signature import *
+import ipaddress
 
 # --- CONFIGURATION ---
 TIMEOUT = 10
@@ -52,7 +53,7 @@ def check_tcp_port(domain, port=443):
 
 def _identify_waf_passive(headers, cookies, body, dns_info):
     headers_lower = {k.lower(): str(v).lower() for k, v in headers.items()}
-    cookie_names = [c.name.lower() for c in cookies]
+    cookie_names = [k.lower() for k in cookies.keys()]
     body_lower = body.lower() if body else ""
 
     dns_signals = dns_info.get("cname", []) + dns_info.get("ns", [])
@@ -73,7 +74,7 @@ def _identify_waf_passive(headers, cookies, body, dns_info):
 
 def _identify_waf_active_light(target_url):
     try:
-        resp = requests.get(target_url + "/?id=1' OR '1'='1", headers=get_headers(), timeout=5)
+        resp = requests.get(target_url + "/?id=1' OR '1'='1", headers=get_headers(), timeout=5, impersonate="chrome120")
         if resp.status_code in (403, 406, 429, 501):
             return _identify_waf_passive(resp.headers, resp.cookies, resp.text, {})
     except Exception:
@@ -161,14 +162,20 @@ def get_http_info(target_url, dns_info, domain):
         "cookies": [], "details": [], "tech": [], "ssl_worked": False, "critical_failure": False
     }
 
-    session = requests.Session()
-    session.mount("https://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.5)))
-    session.mount("http://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.5)))
+    session = requests.Session(impersonate="chrome120")
+    
 
     try:
         # 1. Test HTTPS Principal
         https_url = f"https://{domain}" if not target_url.startswith("https") else target_url
-        resp = session.get(https_url, headers=get_headers(), timeout=TIMEOUT, allow_redirects=True)
+        resp = session.get(https_url, headers=get_headers(), timeout=TIMEOUT, allow_redirects=True, impersonate="chrome120")
+        # Récupère les headers de TOUTES les réponses intermédiaires
+        all_headers = dict(resp.headers)
+        if hasattr(resp, 'history') and resp.history:
+            for r in resp.history:
+                all_headers.update(dict(r.headers))
+
+        headers_lower = {k.lower(): v for k, v in all_headers.items()}
 
         # Vérification redirection inverse (HTTPS -> HTTP)
         if resp.url.startswith("https://"):
@@ -180,7 +187,7 @@ def get_http_info(target_url, dns_info, domain):
 
         # 2. Test de redirection HTTP vers HTTPS (Enforce SSL)
         try:
-            http_resp = session.get(f"http://{domain}", headers=get_headers(), timeout=5, allow_redirects=True)
+            http_resp = session.get(f"http://{domain}", headers=get_headers(), timeout=5, allow_redirects=True, impersonate="chrome120")
             if http_resp.status_code < 400 and http_resp.url.startswith("http://"):
                 res["critical_failure"] = True
                 res["details"].append("-100 pts: 🚨 HTTPS NON FORCÉ (Site accessible en clair)")
@@ -216,7 +223,6 @@ def get_http_info(target_url, dns_info, domain):
             res["details"].append(f"+15 pts: Protection WAF détectée ({res['waf']})")
 
         # --- Analyse Technologies et Headers ---
-        headers_lower = {k.lower(): v for k, v in resp.headers.items()}
         res["server"] = resp.headers.get("Server", "Masqué")
         
         # Détection des technos
@@ -233,11 +239,23 @@ def get_http_info(target_url, dns_info, domain):
             else:
                 res["headers"][h_name] = "❌ Manquant"
                 res["missing"].append(h_name)
+        if "HSTS" in res["missing"]:
+            try:
+                www_resp = session.get(f"https://www.{domain}", headers=get_headers(), 
+                                       timeout=5, impersonate="chrome120")
+                if "strict-transport-security" in {k.lower() for k in www_resp.headers}:
+                    res["headers"]["HSTS"] = "✅ Présent (www)"
+                    res["missing"].remove("HSTS")
+                    res["details"].append("+5 pts: HSTS")
+            except:
+                pass
 
         # Audit des Cookies
         if resp.cookies:
-            for c in resp.cookies: 
-                res["cookies"].append(f"{c.name}: {'✅ OK' if c.secure else '❌ Insecure'}")
+            set_cookie_header = resp.headers.get("set-cookie", "")
+            for name, value in resp.cookies.items():
+                is_secure = "secure" in set_cookie_header.lower()
+                res["cookies"].append(f"{name}: {'✅ OK' if is_secure else '❌ Insecure'}")
         else:
             res["cookies"].append("Aucun cookie")
 
@@ -276,11 +294,21 @@ def get_http_info(target_url, dns_info, domain):
 # MAIN ORCHESTRATOR
 # -------------------------------------------------------------------
 
+def is_safe_domain(ip: str) -> bool:
+    try:
+        return not ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
+
 def analyze_target(domain):
     domain = domain.lower().strip()
     target_url = f"https://{domain}"
 
     dns_d = get_dns_info(domain)
+    
+    if not is_safe_domain(dns_d.get("ip", "127.0.0.1")):
+        return {"error": "PRIVATE_IP", "domain": domain}
+        
     if dns_d.get("error"):
         return {"error": "NXDOMAIN", "domain": domain, "scan_data": {"numeric_score": 0}}
 

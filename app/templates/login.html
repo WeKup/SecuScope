@@ -13,25 +13,27 @@
         </div>
         {% endif %}
         <form action="{{ url_for('main.login') }}" method="POST" class="space-y-6">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-            
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+
             <div>
                 <label class="block text-slate-300 text-sm font-bold mb-2">Modèle IA</label>
-                <select name="model_id" class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash (Rapide)</option>
-                    <option value="gemini-1.5-pro">Gemini 1.5 Pro (Précis)</option>
+                <select name="model_id"
+                    class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé)</option>
+                    <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite (Économique)</option>
                     <option value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</option>
                 </select>
             </div>
 
             <div>
                 <label class="block text-slate-300 text-sm font-bold mb-2">Clé API Google (Gemini)</label>
-                <input type="password" name="api_key" required placeholder="AIzaSy..." 
-                       class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
+                <input type="password" name="api_key" required placeholder="AIzaSy..."
+                    class="w-full bg-slate-900 border border-slate-700 text-white rounded p-3 focus:outline-none focus:border-blue-500">
                 <p class="text-xs text-slate-500 mt-1">La clé est stockée temporairement dans votre session.</p>
             </div>
 
-            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded transition-colors">
+            <button type="submit"
+                class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded transition-colors">
                 Accéder au Scanner
             </button>
         </form>
