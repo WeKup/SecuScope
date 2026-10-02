@@ -39,6 +39,37 @@ Compose, rapport LLM via `google-genai`.
 - Pour l'UI : déléguer à l'agent `design-lead` (voir `.claude/agents/design-lead.md`)
   et respecter `secuscope-ui-rules.md`.
 
+## Reprise — état au 02/10/2026
+
+**Fait :** tâche 1 (driver DB, vérifié en conteneur), tâche 2 (`normalize_domain`),
+fix XSS + injection JS du dashboard (`a08688b`), design system indigo dans
+`base.html` + refonte du dashboard, règles UI et `design-lead.md` alignés,
+README à jour (`007b165`).
+
+**Reste à faire, dans cet ordre (avant de reprendre la tâche 3) :**
+
+1. **UI — `index.html`** au niveau du dashboard : tokens/composants de `base.html`,
+   retirer l'import Motion (→ `.reveal` CSS), loader GSAP conservé (seul endroit
+   autorisé) avec `prefers-reduced-motion`, retirer les faux timings `+420ms`
+   et le `PROBES 6/6` statique, focus visible + labels associés. Graisses Inter
+   300/800 plus chargées : remplacer `font-light` / `font-extrabold`.
+2. **UI — `login.html`** idem : design system, retirer l'import Motion, labels
+   `for`/`id`, note « clé en session uniquement » reliée par `aria-describedby`.
+3. **Nettoyage design system** : retirer l'override temporaire `slate.950` de
+   `base.html`, chercher les résidus `slate-[3-8][05]0` et les hex en dur.
+4. **`.env.example`** : ajouter `SESSION_COOKIE_SECURE=false` (lue par
+   `app/__init__.py`, documentée dans le README §5, absente du gabarit).
+5. **`.gitattributes`** : normaliser les fins de ligne (`* text=auto eol=lf`,
+   binaires exclus) — Git avertit « LF will be replaced by CRLF » à chaque commit.
+6. **Points en suspens à trancher avec Maxime :**
+   - Faux finding : `getVulnerabilityCounts` (dashboard) force `counts.low = 1`
+     quand il n'y a aucun finding → le hero affiche « 1 faible » sur un site
+     parfait. Logique d'affichage, ne pas corriger sans accord.
+   - Textes des grades C et D du barème (dialog `#scoreModal`) rédigés par
+     Claude : à relire.
+   - Chart.js chargé sans version épinglée (`cdn.jsdelivr.net/npm/chart.js`) :
+     épingler une version exacte (même problème que Motion `@latest`).
+
 ## Tâches, par priorité
 
 ### 1. Fix driver DB (BLOQUANT)
