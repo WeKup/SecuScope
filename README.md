@@ -38,7 +38,7 @@ Il identifie l'infrastructure de bordure d'une application (CDN, WAF, reverse pr
 | **Fingerprinting Edge/WAF en cascade** | Trois niveaux successifs : (1) `wafw00f`, (2) signatures passives multi-signaux (en-têtes, cookies, corps de réponse, CNAME/NS), (3) sonde active légère (une requête `GET /?id=1' OR '1'='1` observant uniquement le code de statut retourné — 403/406/429/501 — pour confirmer une interception périmétrique). |
 | **Inférence d'infrastructure** | Corrélation entre autorité de certification TLS et enregistrements DNS pour identifier la plateforme (Cloudflare, Akamai, AWS CloudFront, Azure Front Door, Fastly, Imperva, Google Edge, etc. — 15 architectures couvertes). |
 | **Analyse heuristique SSL/TLS** | Vérification du port 443, validation de la chaîne X.509, contrôle de la date d'expiration, identification de l'autorité de confiance, gestion des architectures fortement filtrées. |
-| **Audit des en-têtes & cookies** | Contrôle de conformité de 6 en-têtes de sécurité (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy), vérification de la redirection HTTPS forcée, contrôle du flag `Secure` sur les cookies. |
+| **Audit des en-têtes & cookies** | Contrôle de conformité de 6 en-têtes de sécurité (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy), vérification de la redirection HTTPS forcée, contrôle des flags `Secure` et `HttpOnly` sur les cookies. |
 | **Notation heuristique normalisée** | Score 0–100 et grade A–F : base de 50 points, addition/déduction par signal (ex. +20 SSL valide, +15 WAF identifié, +5 par en-tête conforme), mise à zéro immédiate en cas de défaillance critique (repli HTTP en clair). |
 | **Rapport structuré par LLM** | Agrégation des signaux transmis à l'API Google GenAI, réponse contrainte au format JSON (résumé directionnel, axes techniques prioritaires, score d'exposition par vecteur). |
 
@@ -56,7 +56,7 @@ Il identifie l'infrastructure de bordure d'une application (CDN, WAF, reverse pr
 > ** N'utilisez SecuScope que sur des systèmes dont vous êtes propriétaire, ou pour lesquels vous disposez d'une autorisation écrite, explicite et préalable de leur responsable.**
 
 - Le formulaire de soumission impose la validation d'une case d'engagement (`legal_consent`) attestant du mandat légal, avant tout déclenchement d'analyse.
-- Un contrôle anti-SSRF (`is_safe_domain`, via `ipaddress.is_private`) rejette systématiquement les plages d'adresses privées, les interfaces locales (`localhost`, `127.0.0.1`) et les adresses réservées.
+- Un contrôle anti-SSRF (`_is_public_ip`, module `ipaddress`) rejette systématiquement toute résolution vers une adresse privée, de bouclage (`localhost`, `127.0.0.1`), link-local, multicast, réservée ou non spécifiée.
 - Conformément aux articles 323-1 et suivants du Code pénal, l'accès ou le maintien non autorisé dans un système de traitement automatisé de données constitue une infraction pénale (des dispositions équivalentes existent dans la plupart des juridictions).
 - Toute requête émise — y compris la sonde active décrite en §1 — reste identifiable dans les journaux du système distant et peut déclencher des alertes SOC.
 
@@ -94,6 +94,8 @@ flowchart LR
 1. Validation d'accès et syntaxique (app/routes.py)
    ├─ Contrôle de la présence de la clé API et du modèle en session
    ├─ Vérification de l'engagement de consentement légal (legal_consent)
+   ├─ Normalisation de la saisie (normalize_domain) : schéma, chemin, port,
+   │  identifiants user:pass et casse retirés pour ne garder que l'hôte
    └─ Validation syntaxique du domaine (validators.domain)
        │
        ▼
@@ -135,14 +137,13 @@ flowchart LR
 | Fichier | Rôle |
 |---|---|
 | `app/__init__.py` | Application factory (`create_app`), initialisation SQLAlchemy, activation globale de `CSRFProtect`, enregistrement du blueprint. |
-| `app/routes.py` | `GET/POST /` : réception et stockage en session de la clé API Google GenAI et du modèle cible · `GET/POST /scan` : validation, exécution du pipeline, calcul du score, appel IA, insertion en base · `GET /dashboard/<int:audit_id>` : affichage des résultats avec contrôle d'appartenance par `session_id` · `GET /logout` : réinitialisation de session. |
+| `app/routes.py` | `GET/POST /` : réception et stockage en session de la clé API Google GenAI (longueur bornée par `MAX_API_KEY_LENGTH` = 256) et du modèle cible (liste blanche `ALLOWED_MODELS`, repli sur `gemini-2.5-flash`) · `GET/POST /scan` : validation, exécution du pipeline, calcul du score, appel IA, insertion en base · `GET /dashboard/<int:audit_id>` : affichage des résultats avec contrôle d'appartenance par `session_id` · `GET /logout` : réinitialisation de session. |
 | `app/models.py` | Modèle `Audit` (SQLAlchemy) : `id`, `domain`, `timestamp` (UTC), `scan_data` (JSON brut : SSL, WAF, IP, serveurs, en-têtes, cookies), `ai_report` (JSON structuré), `score` (A–F), `numeric_score` (0–100), `session_id` (UUID). |
 | `app/services/scanner.py` | Moteur d'acquisition réseau (`curl_cffi`, `socket`, `ssl`). Détection des architectures fortement filtrées (« Forteresse ») et neutralisation du score global en cas d'anomalie majeure. |
 | `app/services/signature.py` | `WAF_SIGNATURES` (15 architectures : Cloudflare, Akamai, Fastly, AWS CloudFront, Imperva, Azure Front Door, F5 BIG-IP, Sucuri, ModSecurity, Google Edge, etc.) · `INFRA_SIGNATURES` (corrélation CA TLS / zones DNS) · `TECH_SIGNATURES` (Nginx, Apache, LiteSpeed, Caddy, IIS, PHP, ASP.NET, Java, Node.js, Python) · `SECURITY_HEADERS` (référentiel des 6 en-têtes audités). |
 | `app/services/scoring.py` | Fonction déterministe d'évaluation à partir de `score_details`. |
 | `app/services/ai.py` | Client `google-genai` ; contraint le modèle à une sortie JSON exclusive. |
-| `app/static/` | Ressources statiques (CSS/JS). |
-| `app/templates/` | Vues Jinja2 (authentification, scan, dashboard). |
+| `app/templates/` | Vues Jinja2 : `base.html` (design system, voir §3.6), `login.html`, `index.html` (saisie + loader de scan), `dashboard.html`, `components/vulnerability_chart.html`. |
 
 ### 3.4 Format du rapport LLM
 
@@ -183,6 +184,16 @@ flowchart LR
 | LLM | google-genai | ≥ 0.3.0 |
 | Serveur WSGI (dépendance présente) | gunicorn | 21.2.0 |
 | Conteneurisation | Docker, Docker Compose | — |
+| Interface | Tailwind CSS (Play CDN), Chart.js, Font Awesome 6 | CDN |
+
+### 3.6 Interface & sécurité côté client
+
+- **Design system unique** dans `base.html` : tokens de couleur en variables CSS (`--ss-*`) branchés sur la config Tailwind, composants `@layer components` (carte, badge, bouton, input, table dense, jauge, tooltip) et tokens de mouvement. Le mode sombre est le mode par défaut ; les valeurs du mode clair sont définies mais pas encore activées. Les règles complètes sont dans `Secuscope-UI-rules.md`.
+- **Codage couleur** : l'indigo est réservé à l'interface et à la télémétrie neutre ; rouge, orange, jaune et vert encodent uniquement un niveau de risque, toujours doublés d'un libellé texte.
+- **Dashboard** : score et grade en tête (jauge graduée sur les seuils A–F de `scoring.py`), matrice des en-têtes triée par risque avec l'impact réel de chaque critère, cookies, infrastructure TLS/WAF, détail du calcul du score, analyse IA, radar et répartition des failles. Mise en page fluide (`repeat(auto-fit, minmax(...))`, largeur plafonnée à 1600px).
+- **Accessibilité** : contraste AA calculé sur chaque paire texte/fond, focus clavier visible, `role="meter"` sur la jauge, `prefers-reduced-motion` respecté par le CSS, le compteur du score et Chart.js.
+- **Sortie LLM traitée comme non fiable** : le gras markdown du rapport est reconstruit en nœuds DOM (jamais `innerHTML`) et les scores `risks` sont forcés en entier avant d'entrer dans le JavaScript, ce qui ferme la voie à une injection pilotée par prompt injection depuis le site scanné.
+- **Cookies de session durcis** : `HttpOnly`, `SameSite=Lax`, durée de vie de 4 h, et `Secure` activable via `SESSION_COOKIE_SECURE`.
 
 ---
 
@@ -236,7 +247,7 @@ docker compose down -v
 
 1. Ouvrir `http://localhost:5000`, renseigner la clé d'API Google GenAI et le modèle souhaité.
 2. Sur `/scan`, saisir le domaine cible, cocher l'engagement de consentement légal, lancer l'audit.
-3. Consulter le résultat sur `/dashboard/<audit_id>` : score/grade, détail des signaux (SSL, WAF, en-têtes) et rapport LLM.
+3. Consulter le résultat sur `/dashboard/<audit_id>` : score/grade, matrice des en-têtes, cookies, infrastructure (TLS, WAF), détail du calcul du score et rapport LLM. Le barème complet A–F est accessible depuis le bouton « Barème ».
 
 ---
 
@@ -249,7 +260,8 @@ Variables définies dans `.env.example` :
 | `FLASK_APP` | Point d'entrée (`run.py`) | `.env` local |
 | `FLASK_ENV` | Mode du framework (`development` / `production`) | `.env` local |
 | `SECRET_KEY` | Chiffrement des cookies de session et jetons CSRF — à générer, jamais commitée | `.env` local |
-| `DATABASE_URL` | Chaîne de connexion PostgreSQL — **surchargée** par `docker-compose.yml` sous Compose | `.env` local / conteneur |
+| `DATABASE_URL` | Chaîne de connexion PostgreSQL — **surchargée** par `docker-compose.yml` sous Compose. Le schéma `postgresql://` est réécrit en `postgresql+psycopg2://` au démarrage | `.env` local / conteneur |
+| `SESSION_COOKIE_SECURE` | `true` pour n'émettre le cookie de session qu'en HTTPS (défaut `false`, pour le développement local en HTTP). Absente de `.env.example`, à ajouter en production | Optionnelle |
 
 **La clé d'API Google GenAI n'est pas stockée dans `.env`** : elle est transmise via l'interface au moment de l'authentification et conservée en session, ce qui limite le risque d'exposition dans des fichiers de configuration partagés.
 
@@ -270,10 +282,21 @@ SecuScope/
 │   │   ├── scanner.py       # Moteur réseau (DNS, SSL, HTTP)
 │   │   ├── scoring.py       # Algorithme de notation
 │   │   └── signature.py     # Signatures WAF, Edge et stacks logicielles
-│   ├── static/               # CSS / JS
-│   └── templates/            # Vues Jinja2 (auth, scan, dashboard)
+│   └── templates/
+│       ├── base.html         # Layout + design system (tokens, composants)
+│       ├── login.html        # Saisie de la clé API et du modèle
+│       ├── index.html        # Formulaire de scan + loader
+│       ├── dashboard.html    # Restitution de l'audit
+│       └── components/
+│           └── vulnerability_chart.html
+├── .claude/agents/           # Agent design-lead (Claude Code)
 ├── .env.example              # Gabarit de configuration
 ├── .gitignore
+├── CLAUDE.md                 # Contexte permanent pour Claude Code
+├── TASK.md                   # Feuille de route des tâches
+├── Secuscope-UI-rules.md     # Règles UI (palette, mouvement, accessibilité)
+├── INTEGRATION_PLAN.md       # Plan de la partie 2 (scan DNS approfondi)
+├── SECURITY_AND_LOGIC_REPORT.md
 ├── docker-compose.yml        # Orchestration web + db
 ├── Dockerfile                # Image applicative (python:3.11-slim)
 ├── LICENSE                   # MIT
@@ -344,6 +367,11 @@ SecuScope/
 - [x] Protection anti-SSRF sur les plages d'adresses réservées et privées
 - [x] Détection des configurations fortement filtrées avec gestion des faux positifs
 - [x] Intégration Google GenAI avec sortie JSON contrainte
+- [x] Normalisation de l'URL saisie (`normalize_domain`)
+- [x] Rendu du rapport LLM sans injection HTML/JS (sortie traitée comme non fiable)
+- [x] Design system unique et refonte du dashboard (hero score/grade, matrice des en-têtes, grilles fluides)
+- [ ] Refonte de `index.html` et `login.html` sur le design system
+- [ ] Durcissement production (gunicorn, `debug` piloté par `FLASK_DEBUG`, utilisateur non-root, healthcheck)
 - [ ] Déchargement du traitement réseau sur file asynchrone (Celery/Redis)
 - [ ] Export des rapports d'audit en PDF/JSON téléchargeable
 - [ ] Suite de tests unitaires et d'intégration avec interception réseau
