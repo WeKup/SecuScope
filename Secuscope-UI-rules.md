@@ -25,8 +25,12 @@ When a React/TypeScript frontend exists, the rules below are mandatory.
 
 - Until the React/TypeScript frontend migration exists, keep Flask templates
   compatible with the current Tailwind CDN setup.
-- Reuse the existing slate/blue/emerald/red/yellow palette and dashboard density.
+- Reuse the slate/indigo/emerald/red/orange/yellow palette (`--ss-*` tokens in
+  `base.html`) and dashboard density.
 - Use Chart.js only for existing Jinja dashboards where no React renderer exists.
+- Do not load Motion in Jinja templates: entrances and reveals use the CSS motion
+  tokens of `base.html` (`.reveal`, `--ss-dur-*`, `--ss-ease-*`) and always honor
+  `prefers-reduced-motion`.
 - Keep JavaScript progressive and local to the template when it only enhances an
   already-rendered audit page.
 - Do not change backend scan, scoring or persistence behavior for UI-only work.
@@ -48,7 +52,10 @@ When a React/TypeScript frontend exists, the rules below are mandatory.
 
 - Components must inherit global colors, spacing, radius and Tailwind conventions
   already present in Part 1.
-- Use `slate` for surfaces, `blue` for neutral security telemetry, `emerald` for
-  positive states, `yellow/orange` for warnings and `red` for critical risk.
+- Use slate-derived neutrals (`--ss-*` tokens) for surfaces, indigo for neutral
+  security telemetry and the rare decorative accent, emerald for positive states,
+  yellow/orange for warnings and red for critical risk. Severity hues (red,
+  orange, yellow, emerald) encode risk level only and are never decorative;
+  indigo never encodes risk.
 - Keep typography compact inside dashboards.
 - Avoid nested cards and decorative section wrappers.

@@ -31,8 +31,10 @@ déjà :
   ensuite, décoratif en dernier.
 - Dense, compact, tableaux/badges/cartes/charts qui aident à comparer le risque.
 - Dark mode d'abord, compatibilité avec le thème clair/sombre existant.
-- Palette : `slate` (surfaces), `blue` (télémétrie neutre), `emerald` (positif),
-  `yellow`/`orange` (avertissement), `red` (critique).
+- Palette : neutres slate (surfaces), `indigo` (télémétrie neutre et accent
+  décoratif rare), `emerald` (positif), `yellow`/`orange` (avertissement),
+  `red` (critique). Les teintes de sévérité ne servent qu'au risque ; l'indigo
+  n'encode jamais un risque.
 
 # Deux modes de travail — vérifier lequel s'applique
 
@@ -40,7 +42,9 @@ déjà :
    Tant qu'il n'existe PAS de frontend React/TypeScript dans le repo :
    - Tu restes en templates Jinja compatibles avec le setup Tailwind CDN existant.
    - Chart.js pour les graphes des dashboards Jinja.
-   - Motion (CDN) pour les entrées de liste / révélations de panneau.
+   - Pas de Motion : entrées et révélations en CSS via les tokens de mouvement
+     de `base.html` (`.reveal`, `--ss-dur-*`, `--ss-ease-*`), avec
+     `prefers-reduced-motion` respecté.
    - GSAP UNIQUEMENT pour le loader de scan temps réel (seul endroit autorisé).
    - Tu réutilises la densité, la palette et les conventions de `base.html`,
      `dashboard.html`, `index.html`.
