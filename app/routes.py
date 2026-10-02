@@ -5,14 +5,47 @@ from app.services.ai import generate_report
 from app.services.scoring import calculate_trust_score  
 from app.models import db, Audit
 import uuid
+from urllib.parse import urlparse
+
 
 bp = Blueprint('main', __name__)
+
+ALLOWED_MODELS = {
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite-preview-06-17",
+    "gemini-1.5-flash",
+}
+DEFAULT_MODEL = "gemini-2.5-flash"
+MAX_API_KEY_LENGTH = 256
+
+def normalize_domain(raw: str) -> str:
+    """Extrait le domaine nu depuis une saisie libre :
+    'https://example.com/path?q=1', 'example.com:443', 'EXAMPLE.com/' -> 'example.com'
+    """
+    raw = raw.strip()
+    if not raw:
+        return ""
+    # urlparse a besoin d'un schéma pour peupler .netloc ; on en met un bidon si absent
+    if "://" not in raw:
+        raw = "//" + raw
+    parsed = urlparse(raw, scheme="http")
+    host = parsed.hostname or ""   # .hostname enlève déjà le port et le user:pass
+    return host.lower().rstrip(".")
+
 
 @bp.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        api_key = request.form.get('api_key')
-        model_id = request.form.get('model_id')
+        api_key = request.form.get('api_key', '').strip()
+        model_id = request.form.get('model_id', DEFAULT_MODEL)
+
+        if not api_key or len(api_key) > MAX_API_KEY_LENGTH:
+            return render_template('login.html', error="Clé API invalide.")
+
+        if model_id not in ALLOWED_MODELS:
+            model_id = DEFAULT_MODEL
+
+        session.permanent = True
         session['user_api_key'] = api_key
         session['user_model_id'] = model_id
         return redirect(url_for('main.index'))
@@ -21,7 +54,7 @@ def login():
 @bp.route('/scan', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        domain = request.form.get('domain', '').strip()
+        domain = normalize_domain(request.form.get('domain', ''))
         
         if not request.form.get('legal_consent'):
             return render_template('index.html', error="Vous devez certifier avoir l'autorisation de scanner ce domaine.")
@@ -49,9 +82,9 @@ def index():
             flash(f"Le domaine '{domain}' est introuvable ou n'existe pas.", "error")
             return redirect(url_for('main.index'))
             
-        ai_res = generate_report(scan_res, api_key=session['user_api_key'], model_id=session['user_model_id'])
         score_data = calculate_trust_score(scan_res)
         scan_res['numeric_score'] = score_data['numeric']
+        ai_res = generate_report(scan_res, api_key=session['user_api_key'], model_id=session['user_model_id'])
         
         audit = Audit(
             domain=domain,

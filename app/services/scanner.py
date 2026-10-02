@@ -3,15 +3,21 @@ import ssl
 import socket
 import dns.resolver
 import dns.reversename
-from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from app.services.signature import *
 import ipaddress
+from http.cookies import SimpleCookie
+from app.services.signature import (
+    INFRA_SIGNATURES,
+    SECURITY_HEADERS,
+    TECH_SIGNATURES,
+    WAF_SIGNATURES,
+)
 
 # --- CONFIGURATION ---
-TIMEOUT = 10
+DNS_TIMEOUT = 3
+TCP_TIMEOUT = 3
+HTTP_TIMEOUT = 8
+LIGHT_WAF_TIMEOUT = 4
 UA_CHROME = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -29,6 +35,50 @@ except ImportError:
 # UTILS
 # -------------------------------------------------------------------
 
+def _build_resolver():
+    resolver = dns.resolver.Resolver()
+    resolver.timeout = DNS_TIMEOUT
+    resolver.lifetime = DNS_TIMEOUT
+    return resolver
+
+
+def _resolve_records(domain, record_type):
+    try:
+        answers = _build_resolver().resolve(domain, record_type)
+        return [answer.to_text() for answer in answers]
+    except (
+        dns.resolver.NoAnswer,
+        dns.resolver.NXDOMAIN,
+        dns.resolver.NoNameservers,
+        dns.exception.Timeout,
+    ):
+        return []
+
+
+def _normalize_host(value):
+    return str(value).lower().rstrip(".")
+
+
+def _is_public_ip(ip):
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+
+    return not any((
+        parsed.is_private,
+        parsed.is_loopback,
+        parsed.is_link_local,
+        parsed.is_multicast,
+        parsed.is_reserved,
+        parsed.is_unspecified,
+    ))
+
+
+def _has_only_public_ips(dns_info):
+    return bool(dns_info.get("ips")) and all(_is_public_ip(ip) for ip in dns_info["ips"])
+
+
 def get_headers():
     return {
         "User-Agent": UA_CHROME,
@@ -41,7 +91,7 @@ def get_headers():
 def check_tcp_port(domain, port=443):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(3)
+            s.settimeout(TCP_TIMEOUT)
             return s.connect_ex((domain, port)) == 0
     except Exception:
         return False
@@ -74,10 +124,15 @@ def _identify_waf_passive(headers, cookies, body, dns_info):
 
 def _identify_waf_active_light(target_url):
     try:
-        resp = requests.get(target_url + "/?id=1' OR '1'='1", headers=get_headers(), timeout=5, impersonate="chrome120")
+        resp = requests.get(
+            target_url + "/?id=1' OR '1'='1",
+            headers=get_headers(),
+            timeout=LIGHT_WAF_TIMEOUT,
+            impersonate="chrome120",
+        )
         if resp.status_code in (403, 406, 429, 501):
             return _identify_waf_passive(resp.headers, resp.cookies, resp.text, {})
-    except Exception:
+    except requests.exceptions.RequestException:
         pass
     return None
 
@@ -87,25 +142,56 @@ def _identify_waf_active_light(target_url):
 # -------------------------------------------------------------------
 
 def get_dns_info(domain):
-    res = {"ip": "Inconnue", "ptr": "", "cname": [], "ns": [], "details": [], "error": False}
+    res = {
+        "ip": "Inconnue",
+        "ips": [],
+        "ptr": "",
+        "cname": [],
+        "ns": [],
+        "details": [],
+        "error": False,
+        "error_type": None,
+    }
     try:
-        answers = dns.resolver.resolve(domain, "A")
-        res["ip"] = answers[0].to_text()
+        resolver = _build_resolver()
+        ipv4 = [answer.to_text() for answer in resolver.resolve(domain, "A")]
+        ipv6 = _resolve_records(domain, "AAAA")
+
+        res["ips"] = ipv4 + ipv6
+        if not res["ips"]:
+            res["error"] = True
+            res["error_type"] = "NO_ADDRESS"
+            res["details"].append("Domaine sans enregistrement A/AAAA exploitable")
+            return res
+
+        res["ip"] = res["ips"][0]
+
         try:
             rev = dns.reversename.from_address(res["ip"])
-            res["ptr"] = str(dns.resolver.resolve(rev, "PTR")[0]).lower()
-        except: pass
-        try:
-            res["cname"] = [str(r.target).lower().rstrip(".") for r in dns.resolver.resolve(domain, "CNAME")]
-        except: pass
-        try:
-            res["ns"] = [str(r.target).lower().rstrip(".") for r in dns.resolver.resolve(domain, "NS")]
-        except: pass
+            res["ptr"] = _normalize_host(resolver.resolve(rev, "PTR")[0])
+        except (
+            dns.resolver.NoAnswer,
+            dns.resolver.NXDOMAIN,
+            dns.resolver.NoNameservers,
+            dns.exception.Timeout,
+        ):
+            pass
+
+        res["cname"] = [_normalize_host(r) for r in _resolve_records(domain, "CNAME")]
+        res["ns"] = [_normalize_host(r) for r in _resolve_records(domain, "NS")]
+
     except dns.resolver.NXDOMAIN:
         res["details"].append("Domaine inexistant (NXDOMAIN)")
         res["error"] = True
-    except Exception as e:
-        if "timeout" in str(e).lower(): res["error"] = True
+        res["error_type"] = "NXDOMAIN"
+    except dns.exception.Timeout:
+        res["details"].append("Timeout DNS")
+        res["error"] = True
+        res["error_type"] = "TIMEOUT"
+    except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+        res["details"].append("Resolution DNS impossible")
+        res["error"] = True
+        res["error_type"] = "DNS_ERROR"
     return res
 
 
@@ -125,7 +211,7 @@ def get_ssl_info(domain):
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
 
-        with socket.create_connection((domain, 443), timeout=TIMEOUT) as sock:
+        with socket.create_connection((domain, 443), timeout=HTTP_TIMEOUT) as sock:
             with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
                 cert = ssock.getpeercert()
                 issuer = dict(x[0] for x in cert["issuer"])
@@ -146,7 +232,7 @@ def get_ssl_info(domain):
     except ssl.SSLError:
         result["error_type"] = "ssl_invalid"
         result["details"].append("-20 pts: Certificat SSL invalide/expiré")
-    except Exception:
+    except (socket.timeout, OSError):
         result["error_type"] = "connection_error"
 
     return result
@@ -156,25 +242,81 @@ def get_ssl_info(domain):
 # HTTP (V12 - Avec Check HTTPS Forcé)
 # -------------------------------------------------------------------
 
+def _merged_response_headers(resp):
+    headers = {}
+    if hasattr(resp, "history") and resp.history:
+        for previous in resp.history:
+            headers.update(dict(previous.headers))
+    headers.update(dict(resp.headers))
+    return headers
+
+
+def _get_set_cookie_headers(headers):
+    getter = getattr(headers, "get_list", None)
+    if callable(getter):
+        return getter("set-cookie") or getter("Set-Cookie")
+
+    raw = headers.get("set-cookie") or headers.get("Set-Cookie")
+    if not raw:
+        return []
+
+    # Fallback conservateur: evite de declarer tous les cookies OK a partir
+    # d'un seul attribut Secure present sur un autre cookie.
+    return [part.strip() for part in raw.split(", ") if "=" in part]
+
+
+def _audit_cookies(resp):
+    if not resp.cookies:
+        return ["Aucun cookie"]
+
+    cookie_headers = _get_set_cookie_headers(resp.headers)
+    parsed_by_name = {}
+
+    for header in cookie_headers:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(header)
+        except Exception:
+            continue
+        for name, morsel in cookie.items():
+            parsed_by_name[name] = {
+                "secure": bool(morsel["secure"]),
+                "httponly": bool(morsel["httponly"]),
+            }
+
+    results = []
+    for name in resp.cookies.keys():
+        attrs = parsed_by_name.get(name, {})
+        secure = attrs.get("secure", False)
+        httponly = attrs.get("httponly", False)
+        status = []
+        status.append("Secure" if secure else "Insecure")
+        status.append("HttpOnly" if httponly else "No HttpOnly")
+        icon = "✅" if secure and httponly else "❌"
+        results.append(f"{name}: {icon} {', '.join(status)}")
+
+    return results
+
+
 def get_http_info(target_url, dns_info, domain):
     res = {
         "server": "Masqué", "waf": "Non détecté", "headers": {}, "missing": [], 
         "cookies": [], "details": [], "tech": [], "ssl_worked": False, "critical_failure": False
     }
 
-    session = requests.Session(impersonate="chrome120")
-    
+    session = requests.Session()
 
     try:
         # 1. Test HTTPS Principal
         https_url = f"https://{domain}" if not target_url.startswith("https") else target_url
-        resp = session.get(https_url, headers=get_headers(), timeout=TIMEOUT, allow_redirects=True, impersonate="chrome120")
-        # Récupère les headers de TOUTES les réponses intermédiaires
-        all_headers = dict(resp.headers)
-        if hasattr(resp, 'history') and resp.history:
-            for r in resp.history:
-                all_headers.update(dict(r.headers))
-
+        resp = session.get(
+            https_url,
+            headers=get_headers(),
+            timeout=HTTP_TIMEOUT,
+            allow_redirects=True,
+            impersonate="chrome120",
+        )
+        all_headers = _merged_response_headers(resp)
         headers_lower = {k.lower(): v for k, v in all_headers.items()}
 
         # Vérification redirection inverse (HTTPS -> HTTP)
@@ -187,12 +329,18 @@ def get_http_info(target_url, dns_info, domain):
 
         # 2. Test de redirection HTTP vers HTTPS (Enforce SSL)
         try:
-            http_resp = session.get(f"http://{domain}", headers=get_headers(), timeout=5, allow_redirects=True, impersonate="chrome120")
+            http_resp = session.get(
+                f"http://{domain}",
+                headers=get_headers(),
+                timeout=LIGHT_WAF_TIMEOUT,
+                allow_redirects=True,
+                impersonate="chrome120",
+            )
             if http_resp.status_code < 400 and http_resp.url.startswith("http://"):
                 res["critical_failure"] = True
                 res["details"].append("-100 pts: 🚨 HTTPS NON FORCÉ (Site accessible en clair)")
                 return res 
-        except:
+        except requests.exceptions.RequestException:
             pass 
 
         # --- Analyse WAF (Hiérarchie de précision) ---
@@ -242,22 +390,16 @@ def get_http_info(target_url, dns_info, domain):
         if "HSTS" in res["missing"]:
             try:
                 www_resp = session.get(f"https://www.{domain}", headers=get_headers(), 
-                                       timeout=5, impersonate="chrome120")
+                                       timeout=LIGHT_WAF_TIMEOUT, impersonate="chrome120")
                 if "strict-transport-security" in {k.lower() for k in www_resp.headers}:
                     res["headers"]["HSTS"] = "✅ Présent (www)"
                     res["missing"].remove("HSTS")
                     res["details"].append("+5 pts: HSTS")
-            except:
+            except requests.exceptions.RequestException:
                 pass
 
         # Audit des Cookies
-        if resp.cookies:
-            set_cookie_header = resp.headers.get("set-cookie", "")
-            for name, value in resp.cookies.items():
-                is_secure = "secure" in set_cookie_header.lower()
-                res["cookies"].append(f"{name}: {'✅ OK' if is_secure else '❌ Insecure'}")
-        else:
-            res["cookies"].append("Aucun cookie")
+        res["cookies"] = _audit_cookies(resp)
 
     # --- GESTION DES ERREURS ---
     except (requests.exceptions.SSLError, requests.exceptions.ProxyError):
@@ -272,20 +414,22 @@ def get_http_info(target_url, dns_info, domain):
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = True 
                 ctx.verify_mode = ssl.CERT_REQUIRED
-                with socket.create_connection((domain, 443), timeout=5) as s:
+                with socket.create_connection((domain, 443), timeout=LIGHT_WAF_TIMEOUT) as s:
                     with ctx.wrap_socket(s, server_hostname=domain) as ss:
                         res["waf"], res["server"] = "🏰 Forteresse", "Protégé"
                         res["details"].extend(["+30 pts: Filtrage Trafic Avancé", "+15 pts: Protection Périmétrique Active"])
                         for _, h in SECURITY_HEADERS.items(): 
                             res["headers"][h] = "🛡️ Masqué"
                         res["tech"].append("Firewall Avancé")
-            except:
+            except (ssl.SSLError, socket.timeout, OSError):
                 res["critical_failure"] = True
                 res["details"].append("-100 pts: Port 443 ouvert mais SSL invalide")
         else:
             res["details"].append("-50 pts: Site Inaccessible")
 
-    except Exception as e:
+    except requests.exceptions.Timeout:
+        res["details"].append("-10 pts: Timeout HTTP")
+    except requests.exceptions.RequestException as e:
         res["details"].append(f"-10 pts: Erreur HTTP ({e})")
 
     return res
@@ -295,22 +439,19 @@ def get_http_info(target_url, dns_info, domain):
 # -------------------------------------------------------------------
 
 def is_safe_domain(ip: str) -> bool:
-    try:
-        return not ipaddress.ip_address(ip).is_private
-    except ValueError:
-        return False
+    return _is_public_ip(ip)
 
 def analyze_target(domain):
     domain = domain.lower().strip()
     target_url = f"https://{domain}"
 
     dns_d = get_dns_info(domain)
-    
-    if not is_safe_domain(dns_d.get("ip", "127.0.0.1")):
-        return {"error": "PRIVATE_IP", "domain": domain}
-        
+
     if dns_d.get("error"):
         return {"error": "NXDOMAIN", "domain": domain, "scan_data": {"numeric_score": 0}}
+
+    if not _has_only_public_ips(dns_d):
+        return {"error": "PRIVATE_IP", "domain": domain}
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_ssl = ex.submit(get_ssl_info, domain)
@@ -373,7 +514,7 @@ def analyze_target(domain):
             for h in list(http_d["headers"].keys()):
                 if "Manquant" in str(http_d["headers"][h]): http_d["headers"][h] = "🛡️ Géré par Infra"
 
-    unique_tech = list(set(http_d["tech"]))
+    unique_tech = list(dict.fromkeys(http_d["tech"]))
     if not unique_tech and "Inaccessible" not in http_d["waf"]: unique_tech = ["Obfusqué (Sécurisé)"]
 
     return {

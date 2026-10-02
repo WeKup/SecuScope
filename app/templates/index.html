@@ -1,122 +1,225 @@
 {% extends "base.html" %}
 
 {% block head %}
+<!-- GSAP Library for the real-time scan loader -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
 <style>
-    /* Animation du Spinner */
-    .loader {
-        border: 3px solid rgba(30, 41, 59, 0.5);
-        /* Slate 800 transparent */
-        border-top: 3px solid #3b82f6;
-        /* Blue 500 */
-        border-radius: 50%;
-        width: 24px;
-        height: 24px;
-        animation: spin 1s linear infinite;
-        display: inline-block;
+    /* Custom styles for the scanning steps */
+    .step-item {
+        transition: color 0.3s ease;
     }
-
-    @keyframes spin {
-        0% {
-            transform: rotate(0deg);
-        }
-
-        100% {
-            transform: rotate(360deg);
-        }
-    }
-
-    /* Classe utilitaire pour cacher */
-    .hidden {
-        display: none !important;
+    .glitch-text {
+        text-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-col items-center justify-center h-[80vh]">
+<div id="landingContainer" class="flex flex-col items-center justify-center min-h-[75vh] py-8">
     <div class="text-center max-w-2xl w-full px-4">
-        <h1
-            class="text-5xl font-extrabold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-            Votre Agent de sécurité 2.0
+        
+        <!-- Badge -->
+        <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold tracking-wide mb-6 uppercase">
+            <i class="fas fa-radar"></i> Scanner externe non intrusif
+        </div>
+        
+        <h1 class="text-4xl font-extrabold tracking-tight text-white mb-4">
+            SecuScope<span class="text-blue-500 font-light">.io</span>
         </h1>
-        <p class="text-slate-400 text-lg mb-8">
-            Analysez instantanément votre posture de sécurité (WAF, SSL, DNS).
-            Sans intrusion. Propulsé par l'IA.
+        <p class="text-slate-400 text-sm max-w-md mx-auto mb-8 font-normal leading-relaxed">
+            Analysez instantanément la posture de sécurité publique d'un domaine (WAF, SSL, DNS). Sans aucune intrusion.
         </p>
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-        <div class="w-full max-w-lg mx-auto mb-6">
-            {% for category, message in messages %}
-            <div
-                class="p-4 rounded-lg bg-red-500/10 border border-red-500/50 text-red-400 text-sm font-mono flex items-center justify-center gap-2">
-                <span>⚠️</span> {{ message }}
-            </div>
-            {% endfor %}
-        </div>
-        {% endif %}
-        {% endwith %}
-
+        <!-- Error Card -->
         {% if error %}
-        <div class="mb-4 p-3 bg-red-500/20 border border-red-500/50 text-red-200 rounded text-center text-sm">
-            {{ error }}
+        <div class="w-full max-w-lg mx-auto mb-6 p-4 rounded-lg bg-red-950/20 border border-red-900/60 text-red-200 text-xs font-mono flex items-center gap-2">
+            <i class="fas fa-exclamation-triangle text-red-400 text-sm"></i> 
+            <span class="flex-grow text-left">{{ error }}</span>
         </div>
         {% endif %}
 
-        <form method="POST" id="scanForm" class="w-full max-w-lg mx-auto flex flex-col gap-4 relative z-10">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <!-- Form Card Container -->
+        <div id="formCard" class="w-full max-w-lg mx-auto bg-slate-900/40 border border-slate-800/80 p-6 rounded-xl shadow-2xl relative z-10">
+            <form method="POST" id="scanForm" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 
-            <div class="flex gap-2">
-                <input type="text" name="domain" placeholder="example.com" required
-                    class="flex-1 p-4 rounded-lg bg-slate-800 border border-slate-700 text-white focus:ring-2 focus:ring-blue-500 outline-none placeholder-slate-500 transition-all">
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <div class="relative flex-grow">
+                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-500">
+                            <i class="fas fa-globe text-xs"></i>
+                        </span>
+                        <input type="text" name="domain" placeholder="example.com" required
+                            class="w-full p-3.5 pl-9 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none placeholder-slate-600 transition-all font-mono">
+                    </div>
 
-                <button type="submit" id="scanBtn"
-                    class="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-[0_0_20px_rgba(37,99,235,0.3)] hover:shadow-[0_0_30px_rgba(37,99,235,0.5)] whitespace-nowrap">
-                    Scanner
-                </button>
+                    <button type="submit" id="scanBtn"
+                        class="px-6 py-3.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg transition-all whitespace-nowrap shadow-md flex items-center justify-center gap-2">
+                        <i class="fas fa-search text-xs"></i>
+                        <span>Lancer l'audit</span>
+                    </button>
+                </div>
+
+                <div class="text-left flex items-start gap-2.5 mt-2">
+                    <input type="checkbox" name="legal_consent" id="legal_consent" required 
+                        class="w-4 h-4 rounded border-slate-850 bg-slate-950 text-blue-600 focus:ring-blue-500 mt-0.5">
+                    <label for="legal_consent" class="text-[11px] text-slate-400 leading-normal">
+                        Je certifie être propriétaire de ce domaine ou disposer d'une autorisation
+écrite pour effectuer cet audit de sécurité externe.
+                    </label>
+                </div>
+            </form>
+        </div>
+
+        <!-- Real-time Scan Loader Card (Initially Hidden) -->
+        <div id="loadingMessage" class="hidden w-full max-w-lg mx-auto bg-slate-950/90 border border-slate-850 p-6 rounded-xl shadow-2xl mt-6 text-left font-mono">
+            <div class="flex items-center justify-between border-b border-slate-850 pb-3 mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></span>
+                    <span class="text-[11px] text-blue-400 uppercase tracking-wider font-semibold">Audit de sécurité externe</span>
+                </div>
+                <div class="text-[10px] text-slate-600">PROBES: 6/6</div>
             </div>
 
-            <div class="legal-consent text-left text-sm text-slate-400 mt-2">
-                <input type="checkbox" name="legal_consent" id="legal_consent" required class="mr-2">
-                <label for="legal_consent">
-                    Je certifie être propriétaire de ce domaine ou disposer d'une autorisation écrite du propriétaire
-                    pour effectuer cet audit.
-                </label>
+            <!-- Steps Progress Logs -->
+            <div class="space-y-3.5 text-xs text-slate-500">
+                <div class="step-item flex items-center justify-between gap-3" id="step1">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Résolution DNS et filtrage SSRF</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
+                <div class="step-item flex items-center justify-between gap-3" id="step2">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Diagnostic SSL/TLS et expirations</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
+                <div class="step-item flex items-center justify-between gap-3" id="step3">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Audit des entêtes HTTP</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
+                <div class="step-item flex items-center justify-between gap-3" id="step4">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Analyse de sécurité des cookies</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
+                <div class="step-item flex items-center justify-between gap-3" id="step5">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Détection signatures WAF & CDN</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
+                <div class="step-item flex items-center justify-between gap-3" id="step6">
+                    <div class="flex items-center gap-2.5">
+                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
+                        <span>Génération cognitive du rapport IA</span>
+                    </div>
+                    <span class="step-time text-[10px] text-slate-750"></span>
+                </div>
             </div>
-        </form>
 
-        <div id="loadingMessage" class="hidden mt-6 transition-all duration-300 ease-in-out">
-            <div class="flex flex-col items-center justify-center gap-3">
-                <div class="loader"></div>
-                <div class="text-sm text-slate-400 animate-pulse font-mono">
-                    Initialisation des sondes... Analyse en cours...
+            <!-- Simulated live logs stream -->
+            <div class="mt-5 pt-3.5 border-t border-slate-850 text-[10px] text-slate-650 h-8 overflow-hidden relative">
+                <div id="liveLogs" class="absolute bottom-0 left-0 right-0 flex flex-col gap-0.5">
+                    <!-- Javascript will append logs here -->
                 </div>
             </div>
         </div>
 
-        <div class="mt-12 flex justify-center gap-6 text-xs text-slate-500 font-mono tracking-wide">
-            <span class="flex items-center gap-1"><span class="text-emerald-500">🔒</span> Analyse Passive</span>
-            <span class="flex items-center gap-1"><span class="text-blue-500">🛡️</span> WAF Logs</span>
-            <span class="flex items-center gap-1"><span class="text-purple-500">🤖</span> AI Report</span>
+        <!-- Passive indicators bar -->
+        <div class="mt-12 flex flex-wrap justify-center gap-6 text-[10px] text-slate-500 font-mono uppercase tracking-widest">
+            <span class="flex items-center gap-1.5"><i class="fas fa-search text-emerald-500"></i> Diagnostic </span>
+            <span class="flex items-center gap-1.5"><i class="fas fa-shield-alt text-blue-500"></i> Protection WAF</span>
+            <span class="flex items-center gap-1.5"><i class="fas fa-brain text-purple-500"></i> Synthèse Cognitive</span>
         </div>
 
     </div>
 </div>
 
 <script>
-    document.getElementById('scanForm').addEventListener('submit', function () {
+    document.getElementById('scanForm').addEventListener('submit', function (e) {
         // 1. On récupère les éléments
-        const btn = document.getElementById('scanBtn');
-        const loader = document.getElementById('loadingMessage');
-        const input = this.querySelector('input[type="text"]');
+        const formCard = document.getElementById('formCard');
+        const loaderCard = document.getElementById('loadingMessage');
 
-        // 2. On change l'état visuel (Feedback immédiat)
-        btn.innerHTML = 'Scan en cours...';
-        btn.classList.add('opacity-75', 'cursor-not-allowed');
-        input.classList.add('opacity-50');
+        // 2. On masque la carte formulaire et on affiche le chargeur terminal
+        formCard.classList.add('hidden');
+        loaderCard.classList.remove('hidden');
 
-        // 3. On affiche le loader
-        loader.classList.remove('hidden');
+        // 3. Initialisation de la séquence d'animations avec GSAP
+        const tl = gsap.timeline();
+        
+        // Helper to update step to "active" state
+        function setActive(stepId) {
+            const stepEl = document.getElementById(stepId);
+            stepEl.classList.remove('text-slate-500');
+            stepEl.classList.add('text-blue-400', 'font-medium');
+            stepEl.querySelector('.step-icon').innerHTML = '<i class="fas fa-spinner fa-spin text-blue-400"></i>';
+            appendLog(`[PROBE] Lancement du sous-système de diagnostics pour ${stepId}...`);
+        }
+
+        // Helper to update step to "completed" state
+        function setComplete(stepId, duration) {
+            const stepEl = document.getElementById(stepId);
+            stepEl.classList.remove('text-blue-400', 'font-medium');
+            stepEl.classList.add('text-slate-300');
+            stepEl.querySelector('.step-icon').innerHTML = '<i class="fas fa-check-circle text-emerald-500"></i>';
+            stepEl.querySelector('.step-time').textContent = `+${duration}ms`;
+            appendLog(`[SUCCESS] Analyse effectuée avec succès pour ${stepId}.`);
+        }
+
+        function appendLog(text) {
+            const container = document.getElementById('liveLogs');
+            const line = document.createElement('div');
+            line.className = 'truncate';
+            line.textContent = `> ${text}`;
+            container.appendChild(line);
+            
+            // Limit logs displayed
+            if (container.children.length > 3) {
+                container.removeChild(container.firstChild);
+            }
+        }
+
+        // Séquence temporelle animée par GSAP (durée totale simulée ~5.5s maximum)
+        tl.call(() => setActive('step1'))
+          .to({}, { duration: 0.7 })
+          .call(() => setComplete('step1', 420))
+          
+          .call(() => setActive('step2'))
+          .to({}, { duration: 0.9 })
+          .call(() => setComplete('step2', 680))
+          
+          .call(() => setActive('step3'))
+          .to({}, { duration: 1.1 })
+          .call(() => setComplete('step3', 890))
+          
+          .call(() => setActive('step4'))
+          .to({}, { duration: 0.8 })
+          .call(() => setComplete('step4', 510))
+          
+          .call(() => setActive('step5'))
+          .to({}, { duration: 1.3 })
+          .call(() => setComplete('step5', 1040))
+          
+          .call(() => setActive('step6'))
+          .to({}, { duration: 10.0 }); // Long duration until backend redirect
     });
+</script>
+
+<script type="module">
+    // Page Entrance Animation via Motion CDN
+    import('https://cdn.jsdelivr.net/npm/motion@latest/+esm')
+        .then(({ animate }) => {
+            animate('#landingContainer', { opacity: [0, 1], y: [16, 0] }, { duration: 0.55, easing: 'ease-out' });
+        });
 </script>
 {% endblock %}

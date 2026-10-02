@@ -9,6 +9,8 @@ def calculate_trust_score(scan_results):
     details = scan_results.get("score_details", [])
     
     for item in details:
+        if not isinstance(item, str):
+            continue
         match = re.match(r'^([+-]\d+)\s*pts', item)
         if match:
             current_score += int(match.group(1))

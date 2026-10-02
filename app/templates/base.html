@@ -2,46 +2,108 @@
 <html lang="fr" class="dark">
 <head>
     <meta charset="UTF-8">
-    <title>SecuScope SaaS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecuScope.io - Diagnostic de Sécurité Externe</title>
+    
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        slate: {
+                            950: '#090d16',
+                            900: '#0f172a',
+                            800: '#1e293b',
+                            700: '#334155',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- FontAwesome Icons -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
     <style>
-        body { background-color: #0f172a; color: #e2e8f0; }
+        body {
+            background-color: #090d16;
+            color: #f1f5f9;
+        }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #090d16;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+        }
     </style>
     {% block head %}{% endblock %}
 </head>
 <body class="font-sans antialiased min-h-screen flex flex-col">
-    <nav class="bg-slate-900 border-b border-slate-800 p-4 shadow-lg">
+    <!-- Navbar with Glassmorphism -->
+    <nav class="sticky top-0 z-50 bg-[#090d16]/80 backdrop-blur-md border-b border-slate-800/60 py-3.5 px-4">
         <div class="container mx-auto flex justify-between items-center">
-            <a href="{{ url_for('main.index') }}" class="text-2xl font-bold text-blue-500 tracking-tighter">
-                SecuScope<span class="text-white">.io</span>
+            <a href="{{ url_for('main.index') }}" class="text-xl font-bold tracking-tight text-white flex items-center gap-2 hover:opacity-95 transition-opacity">
+                <span class="text-blue-500 font-extrabold font-mono tracking-tighter">🛡️ SecuScope</span>
+                <span class="text-slate-400 text-xs px-1.5 py-0.5 rounded border border-slate-800 bg-slate-900/60 font-mono font-medium">v1.2</span>
             </a>
 
-            <div class="flex items-center gap-6">
+            <div class="flex items-center gap-4">
                 {% if session.get('user_api_key') %}
-                    <div class="hidden md:flex items-center text-slate-400 text-sm bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
-                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse mr-2"></span>
-                        <i class="fas fa-robot mr-2"></i> {{ session.get('user_model_id') }}
+                    <div class="flex items-center text-slate-400 text-xs bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800 font-mono">
+                        <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-2.5"></span>
+                        <i class="fas fa-microchip mr-1.5 text-blue-400"></i> {{ session.get('user_model_id') }}
                     </div>
 
                     <a href="{{ url_for('main.logout') }}" 
-                       class="flex items-center gap-2 text-slate-400 hover:text-red-400 transition-colors text-sm font-medium">
-                        <i class="fas fa-power-off"></i> 
+                       class="flex items-center gap-1.5 text-slate-400 hover:text-red-400 transition-colors text-xs font-semibold px-2 py-1 rounded hover:bg-red-500/5">
+                        <i class="fas fa-sign-out-alt"></i> 
                         <span>Déconnexion</span>
                     </a>
                 {% else %}
-                    <span class="text-slate-500 text-xs italic">Moteur IA non configuré</span>
+                    <a href="{{ url_for('main.login') }}" class="flex items-center gap-2 text-slate-400 hover:text-slate-200 transition-all bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800/80 text-xs font-mono">
+                        <span class="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse mr-2"></span>
+                        <span>IA non configurée</span>
+                    </a>
                 {% endif %}
             </div>
         </div>
     </nav>
 
-    <main class="flex-grow container mx-auto p-4">
+    <!-- Main Content -->
+    <main class="flex-grow container mx-auto p-4 max-w-7xl">
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
             {% for category, message in messages %}
-              <div class="mb-4 p-4 rounded-lg {% if category == 'error' %}bg-red-900/50 border border-red-500 text-red-200{% else %}bg-blue-900/50 border border-blue-500 text-blue-200{% endif %}">
-                {{ message }}
+              <div class="mb-5 p-3.5 rounded-lg border flex items-start gap-3 text-sm transition-all duration-300 {% if category == 'error' %}bg-red-950/20 border-red-900/60 text-red-200{% else %}bg-blue-950/20 border-blue-900/60 text-blue-200{% endif %}" id="flash-message">
+                <i class="fas {% if category == 'error' %}fa-exclamation-circle text-red-400{% else %}fa-info-circle text-blue-400{% endif %} mt-0.5 text-base"></i>
+                <div class="flex-grow font-medium">{{ message }}</div>
+                <button onclick="this.parentElement.remove()" class="text-slate-500 hover:text-slate-300 transition-colors">
+                    <i class="fas fa-times"></i>
+                </button>
               </div>
             {% endfor %}
           {% endif %}
@@ -50,8 +112,9 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="p-4 text-center text-slate-600 text-sm border-t border-slate-800/50">
-        &copy; 2026 SecuScope - Analyse passive uniquement - Conformité RGPD
+    <!-- Footer -->
+    <footer class="py-6 text-center text-slate-500 text-xs border-t border-slate-900 bg-slate-950/20 font-mono">
+        &copy; 2026 SecuScope - Reconnaissance passive & fingerprinting actif léger - Conformité RGPD
     </footer>
 </body>
 </html>
