@@ -4,88 +4,238 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SecuScope.io - Diagnostic de Sécurité Externe</title>
-    
-    <!-- Google Fonts: Inter & JetBrains Mono -->
+
+    <!-- Google Fonts: Inter (axe opsz pour le chiffre hero) & JetBrains Mono -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
+        // Design system : chaque couleur est un token défini une seule fois en variable CSS (cf. <style> plus bas)
+        const ssv = (n) => `rgb(var(--ss-${n}) / <alpha-value>)`;
+        const sev = (n) => ({ DEFAULT: ssv(n), fg: ssv(`${n}-fg`) });
         tailwind.config = {
             darkMode: 'class',
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                        mono: ['JetBrains Mono', 'monospace'],
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', '"Segoe UI"', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'ui-monospace', '"Cascadia Code"', 'Consolas', 'monospace'],
+                    },
+                    fontSize: {
+                        '2xs': ['11px', { lineHeight: '16px' }],
+                        dense: ['13px', { lineHeight: '20px' }],
+                        hero: ['64px', { lineHeight: '64px' }],
+                        'hero-sm': ['48px', { lineHeight: '48px' }],
                     },
                     colors: {
-                        slate: {
-                            950: '#090d16',
-                            900: '#0f172a',
-                            800: '#1e293b',
-                            700: '#334155',
-                        }
-                    }
-                }
-            }
-        }
+                        slate: { 950: '#0b0d12' },  // TEMPORAIRE (= canvas) : retiré une fois toutes les pages migrées
+                        canvas: ssv('canvas'),
+                        surface: { DEFAULT: ssv('surface'), 2: ssv('surface-2'), 3: ssv('surface-3') },
+                        line: { DEFAULT: ssv('line'), strong: ssv('line-strong') },
+                        fg: { DEFAULT: ssv('fg'), muted: ssv('fg-muted'), subtle: ssv('fg-subtle') },
+                        accent: { DEFAULT: ssv('accent'), fg: ssv('accent-fg'), hover: ssv('accent-hover'), active: ssv('accent-active') },
+                        critical: sev('critical'), high: sev('high'), medium: sev('medium'),
+                        low: sev('low'), info: sev('info'), pass: sev('pass'),
+                    },
+                },
+            },
+        };
     </script>
-    
+
     <!-- FontAwesome Icons -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
-    <style>
-        body {
-            background-color: #090d16;
-            color: #f1f5f9;
+
+    <style type="text/tailwindcss">
+        /* Tokens au format "R G B". Light en dormance (pas de toggle) ; .dark est le défaut. */
+        :root {
+            color-scheme: light;
+            --ss-canvas: 247 248 250;  --ss-surface: 255 255 255;  --ss-surface-2: 241 243 246;  --ss-surface-3: 233 236 241;
+            --ss-line: 223 226 241;    --ss-line-strong: 140 147 160;
+            --ss-fg: 20 23 31;         --ss-fg-muted: 84 91 104;   --ss-fg-subtle: 107 114 128;
+            --ss-accent: 79 91 207;    --ss-accent-fg: 71 82 194;  --ss-accent-hover: 71 82 194;  --ss-accent-active: 63 73 176;
+            --ss-critical: 239 68 68;  --ss-critical-fg: 185 28 28;
+            --ss-high: 249 115 22;     --ss-high-fg: 154 52 18;
+            --ss-medium: 234 179 8;    --ss-medium-fg: 133 77 14;
+            --ss-low: 148 163 184;     --ss-low-fg: 71 85 105;
+            --ss-info: 91 102 214;     --ss-info-fg: 71 82 194;
+            --ss-pass: 16 185 129;     --ss-pass-fg: 4 120 87;
+
+            /* Mouvement */
+            --ss-dur-instant: 100ms;  --ss-dur-fast: 150ms;  --ss-dur-base: 220ms;  --ss-dur-hero: 1100ms;
+            --ss-stagger: 40ms;
+            --ss-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+            --ss-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+            --ss-ease-in: cubic-bezier(0.4, 0, 1, 1);
         }
-        
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
+        .dark {
+            color-scheme: dark;
+            --ss-canvas: 11 13 18;     --ss-surface: 18 21 28;     --ss-surface-2: 26 30 39;  --ss-surface-3: 33 37 48;
+            --ss-line: 37 41 63;       --ss-line-strong: 92 99 114;
+            --ss-fg: 230 232 236;      --ss-fg-muted: 155 163 176; --ss-fg-subtle: 122 130 145;
+            --ss-accent: 79 91 207;    --ss-accent-fg: 139 149 238; --ss-accent-hover: 91 102 214; --ss-accent-active: 71 82 194;
+            --ss-critical-fg: 248 113 113; --ss-high-fg: 251 146 60; --ss-medium-fg: 250 204 21;
+            --ss-low-fg: 203 213 225;  --ss-info-fg: 139 149 238;  --ss-pass-fg: 52 211 153;
         }
-        ::-webkit-scrollbar-track {
-            background: #090d16;
+
+        @keyframes ss-rise { from { opacity: 0; transform: translateY(6px); } }
+        @keyframes ss-fill { from { transform: scaleX(0); } }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-delay: 0ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
         }
-        ::-webkit-scrollbar-thumb {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 4px;
+
+        @layer base {
+            body { @apply bg-canvas text-fg font-sans antialiased; }
+            ::selection { @apply bg-accent/30; }
+            dialog::backdrop { background: rgb(var(--ss-canvas) / 0.8); }
+            ::-webkit-scrollbar { width: 8px; height: 8px; }
+            ::-webkit-scrollbar-track { background: rgb(var(--ss-canvas)); }
+            ::-webkit-scrollbar-thumb { background: rgb(var(--ss-surface-3)); border-radius: 4px; }
+            html { scrollbar-color: rgb(var(--ss-surface-3)) transparent; }
         }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #334155;
+
+        @layer components {
+            /* Focus commun à tout l'interactif : ring indigo-400 (7:1 sur canvas) */
+            .focus-ring { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-fg focus-visible:ring-offset-2 focus-visible:ring-offset-canvas; }
+
+            /* Mise en page fluide : pleine largeur avec gouttière qui respire, plafonnée à 1600px */
+            .shell     { width: min(100% - 2 * clamp(1rem, 4vw, 2.5rem), 1600px); margin-inline: auto; }
+            /* Grille de cartes auto-adaptative (aucune media query) : --min = largeur mini d'une carte */
+            .auto-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--min, 26rem)), 1fr)); }
+            .span-full { grid-column: 1 / -1; }
+
+            /* Carte : un seul niveau, jamais imbriquée. Profondeur subtile : reflet haut + ombre douce, pas de glow */
+            .panel        { @apply rounded-xl border border-line bg-surface;
+                            background-image: linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 6rem);
+                            box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 1px 2px 0 rgb(0 0 0 / 0.3), 0 12px 32px -16px rgb(0 0 0 / 0.6); }
+            .panel-header { @apply flex items-center justify-between gap-3 border-b border-line px-5 py-3.5; }
+            .panel-title  { @apply flex items-center gap-2 text-sm font-semibold text-accent-fg; }
+            .panel-title > i { @apply text-xs opacity-80; }
+            .panel-body   { @apply p-5; }
+            .label        { @apply text-2xs font-medium uppercase tracking-[0.06em] text-accent-fg; }
+
+            /* Tooltip soigné (CSS seul) : data-tip="…" ; délai d'entrée au survol, immédiat au focus clavier */
+            .tip { position: relative; }
+            .tip::after {
+                @apply rounded-md border border-line bg-surface-3 px-2.5 py-1.5 font-sans text-xs font-medium normal-case tracking-normal text-fg;
+                content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 60;
+                width: max-content; max-width: 16rem; white-space: normal; text-align: left; pointer-events: none;
+                box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.6);
+                opacity: 0; transform: translate(-50%, 4px);
+                transition: opacity var(--ss-dur-fast) var(--ss-ease-out), transform var(--ss-dur-fast) var(--ss-ease-out);
+            }
+            .tip:hover::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 300ms; }
+            .tip:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+
+            /* Tonalités : sévérités = risque uniquement ; info = télémétrie indigo ; neutral = inconnu */
+            .tone-critical { @apply border-critical/30 bg-critical/10 text-critical-fg; }
+            .tone-high     { @apply border-high/30 bg-high/10 text-high-fg; }
+            .tone-medium   { @apply border-medium/30 bg-medium/10 text-medium-fg; }
+            .tone-low      { @apply border-low/30 bg-low/10 text-low-fg; }
+            .tone-info     { @apply border-info/30 bg-info/10 text-info-fg; }
+            .tone-pass     { @apply border-pass/30 bg-pass/10 text-pass-fg; }
+            .tone-neutral  { @apply border-dashed border-line-strong bg-transparent text-fg-muted; }
+
+            .badge { @apply inline-flex h-5 items-center gap-1 whitespace-nowrap rounded border px-1.5 text-2xs font-medium uppercase tracking-[0.04em]; }
+            .grade { @apply inline-grid h-12 w-12 lg:h-14 lg:w-14 shrink-0 place-items-center rounded-lg border text-2xl lg:text-3xl font-bold; }
+
+            /* Boutons */
+            .btn { @apply focus-ring inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md border border-transparent font-medium select-none
+                          motion-safe:active:scale-[0.98]
+                          disabled:pointer-events-none disabled:opacity-40 aria-disabled:pointer-events-none aria-disabled:opacity-40;
+                   transition-property: background-color, border-color, color, transform;
+                   transition-duration: var(--ss-dur-fast);
+                   transition-timing-function: var(--ss-ease-standard); }
+            .btn-sm   { @apply h-7 px-2.5 text-xs; }
+            .btn-md   { @apply h-8 px-3 text-sm; }
+            .btn-lg   { @apply h-11 px-5 text-sm; }
+            .btn-icon { @apply h-8 w-8 p-0; }
+            .btn-primary   { @apply bg-accent text-white hover:bg-accent-hover active:bg-accent-active; box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.12); }
+            .btn-secondary { @apply border-line bg-surface-2 text-fg hover:bg-surface-3 active:bg-surface-2; }
+            .btn-ghost     { @apply text-fg-muted hover:bg-surface-2 hover:text-fg active:bg-surface-3; }
+            .btn-danger    { @apply bg-red-700 text-white hover:bg-red-600 active:bg-red-800; }
+
+            /* Champs */
+            .input  { @apply block h-9 w-full rounded-md border border-line-strong bg-canvas px-3 text-sm text-fg placeholder:text-fg-subtle
+                             hover:border-fg-subtle focus:border-accent-fg focus:outline-none focus:ring-1 focus:ring-accent-fg
+                             read-only:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50
+                             aria-[invalid=true]:border-critical aria-[invalid=true]:focus:ring-critical;
+                      transition-property: border-color, box-shadow;
+                      transition-duration: var(--ss-dur-fast); }
+            .input-lg { @apply h-11 text-base; }
+            .select   { @apply appearance-none pr-8; }   /* à combiner : class="input select" */
+            .checkbox { @apply focus-ring h-4 w-4 rounded-sm border-line-strong accent-accent; }
+            .field-error { @apply mt-1.5 text-xs text-critical-fg; }
+
+            /* Table dense */
+            .table    { @apply w-full border-collapse text-left text-dense; }
+            :where(.table) th { @apply h-9 border-b border-line px-5 text-2xs font-medium uppercase tracking-[0.06em] text-accent-fg; }
+            :where(.table) td { @apply h-10 border-b border-line px-5 align-middle text-fg; }
+            :where(.table) tbody tr:last-child td { @apply border-b-0; }
+            :where(.table) tbody tr { @apply hover:bg-surface-2/60 focus-within:bg-surface-2; transition: background-color var(--ss-dur-instant) var(--ss-ease-standard); }
+            .table .num  { @apply text-right font-mono tabular-nums; }
+            .table .data { @apply font-mono text-xs; }
+            /* Marqueur de sévérité : liseré interne, ne décale pas les colonnes */
+            .sev-critical { box-shadow: inset 2px 0 0 0 rgb(var(--ss-critical)); }
+            .sev-high     { box-shadow: inset 2px 0 0 0 rgb(var(--ss-high)); }
+            .sev-medium   { box-shadow: inset 2px 0 0 0 rgb(var(--ss-medium)); }
+            .sev-low      { box-shadow: inset 2px 0 0 0 rgb(var(--ss-low)); }
+
+            /* Jauge de score : style="--score: N" sur .meter-fill */
+            .meter      { @apply relative h-2 w-full overflow-hidden rounded-[3px] bg-surface-3; }
+            .meter-fill { @apply h-full w-full rounded-[3px];
+                          transform-origin: left;
+                          transform: scaleX(calc(var(--score, 0) / 100));
+                          animation: ss-fill var(--ss-dur-hero) var(--ss-ease-out) 120ms both; }
+            .meter-tick { @apply absolute inset-y-0 w-px bg-surface; }
+
+            /* Mouvement d'entrée (une seule fois) : style="--i: N" pour le décalage */
+            .reveal       { animation: ss-rise var(--ss-dur-base) var(--ss-ease-out) calc(var(--i, 0) * var(--ss-stagger)) both; }
+            .grade-settle { animation: ss-rise var(--ss-dur-base) var(--ss-ease-out) 900ms both; }
+
+            /* Couche flottante (tooltip) : la seule à avoir une ombre portée */
+            .popover { @apply rounded-md border border-line bg-surface p-3 text-xs text-fg-muted shadow-lg shadow-black/40; }
         }
     </style>
+    <script>
+        // Pont Chart.js : lit un token en rgba(r,g,b,a) — Chart.js parse mal la syntaxe à espaces
+        window.ssToken = (name, a = 1) =>
+            `rgba(${getComputedStyle(document.documentElement).getPropertyValue('--ss-' + name).trim().split(/\s+/).join(',')},${a})`;
+        window.ssReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    </script>
     {% block head %}{% endblock %}
 </head>
-<body class="font-sans antialiased min-h-screen flex flex-col">
-    <!-- Navbar with Glassmorphism -->
-    <nav class="sticky top-0 z-50 bg-[#090d16]/80 backdrop-blur-md border-b border-slate-800/60 py-3.5 px-4">
-        <div class="container mx-auto flex justify-between items-center">
-            <a href="{{ url_for('main.index') }}" class="text-xl font-bold tracking-tight text-white flex items-center gap-2 hover:opacity-95 transition-opacity">
-                <span class="text-blue-500 font-extrabold font-mono tracking-tighter">🛡️ SecuScope</span>
-                <span class="text-slate-400 text-xs px-1.5 py-0.5 rounded border border-slate-800 bg-slate-900/60 font-mono font-medium">v1.2</span>
+<body class="min-h-screen flex flex-col">
+    <nav class="sticky top-0 z-50 bg-canvas border-b border-line">
+        <div class="shell h-14 flex justify-between items-center">
+            <a href="{{ url_for('main.index') }}" class="focus-ring flex items-center gap-2 rounded-md">
+                <i class="fas fa-shield-alt text-accent-fg" aria-hidden="true"></i>
+                <span class="font-mono text-base font-semibold tracking-tight text-fg">SecuScope</span>
+                <span class="badge tone-neutral normal-case">v2</span>
             </a>
 
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
                 {% if session.get('user_api_key') %}
-                    <div class="flex items-center text-slate-400 text-xs bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800 font-mono">
-                        <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-2.5"></span>
-                        <i class="fas fa-microchip mr-1.5 text-blue-400"></i> {{ session.get('user_model_id') }}
-                    </div>
+                    <span class="hidden sm:inline-flex h-7 items-center gap-2 whitespace-nowrap rounded-md border border-line px-2.5 font-mono text-xs text-fg-muted">
+                        <span class="h-1.5 w-1.5 rounded-full bg-accent-fg" aria-hidden="true"></span>
+                        <span class="sr-only">IA configurée :</span>
+                        {{ session.get('user_model_id') }}
+                    </span>
 
-                    <a href="{{ url_for('main.logout') }}" 
-                       class="flex items-center gap-1.5 text-slate-400 hover:text-red-400 transition-colors text-xs font-semibold px-2 py-1 rounded hover:bg-red-500/5">
-                        <i class="fas fa-sign-out-alt"></i> 
+                    <a href="{{ url_for('main.logout') }}" class="btn btn-sm btn-ghost">
+                        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
                         <span>Déconnexion</span>
                     </a>
                 {% else %}
-                    <a href="{{ url_for('main.login') }}" class="flex items-center gap-2 text-slate-400 hover:text-slate-200 transition-all bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800/80 text-xs font-mono">
-                        <span class="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse mr-2"></span>
+                    <a href="{{ url_for('main.login') }}" class="btn btn-sm btn-ghost border-dashed border-line-strong">
                         <span>IA non configurée</span>
                     </a>
                 {% endif %}
@@ -93,16 +243,17 @@
         </div>
     </nav>
 
-    <!-- Main Content -->
-    <main class="flex-grow container mx-auto p-4 max-w-7xl">
+    <main class="shell flex-grow py-6 lg:py-8">
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
             {% for category, message in messages %}
-              <div class="mb-5 p-3.5 rounded-lg border flex items-start gap-3 text-sm transition-all duration-300 {% if category == 'error' %}bg-red-950/20 border-red-900/60 text-red-200{% else %}bg-blue-950/20 border-blue-900/60 text-blue-200{% endif %}" id="flash-message">
-                <i class="fas {% if category == 'error' %}fa-exclamation-circle text-red-400{% else %}fa-info-circle text-blue-400{% endif %} mt-0.5 text-base"></i>
-                <div class="flex-grow font-medium">{{ message }}</div>
-                <button onclick="this.parentElement.remove()" class="text-slate-500 hover:text-slate-300 transition-colors">
-                    <i class="fas fa-times"></i>
+              {# Erreur bloquante = seule exception tolérée de couleur de sévérité hors risque #}
+              {% set tone = 'critical' if category == 'error' else 'info' %}
+              <div class="mb-4 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm tone-{{ tone }}" role="{{ 'alert' if category == 'error' else 'status' }}">
+                <i class="fas {% if category == 'error' %}fa-exclamation-circle{% else %}fa-info-circle{% endif %} mt-0.5" aria-hidden="true"></i>
+                <div class="flex-grow font-medium text-fg">{{ message }}</div>
+                <button type="button" onclick="this.parentElement.remove()" class="btn btn-icon btn-ghost -my-1.5 -mr-2" aria-label="Fermer le message">
+                    <i class="fas fa-times" aria-hidden="true"></i>
                 </button>
               </div>
             {% endfor %}
@@ -112,9 +263,10 @@
         {% block content %}{% endblock %}
     </main>
 
-    <!-- Footer -->
-    <footer class="py-6 text-center text-slate-500 text-xs border-t border-slate-900 bg-slate-950/20 font-mono">
-        &copy; 2026 SecuScope - Reconnaissance passive & fingerprinting actif léger - Conformité RGPD
+    <footer class="border-t border-line">
+        <div class="shell py-6 text-center font-mono text-xs text-fg-muted">
+            &copy; 2026 SecuScope - Reconnaissance passive & fingerprinting actif léger - Conformité RGPD
+        </div>
     </footer>
 </body>
 </html>
