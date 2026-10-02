@@ -251,12 +251,14 @@
 <script>
     // 1. RADAR CHART CONFIGURATION (Attack Surface)
     const ctx = document.getElementById('securityRadar');
+    {# Sortie LLM : forcée en entier pour ne jamais injecter de code dans le <script> #}
+    {% set risks = audit.ai_report.get('risks') if audit.ai_report.get('risks') is mapping else {} %}
     const riskData = {
-        mitm: {{ audit.ai_report['risks']['mitm'] if audit.ai_report.get('risks') else 50 }},
-        xss: {{ audit.ai_report['risks']['xss'] if audit.ai_report.get('risks') else 50 }},
-        clickjacking: {{ audit.ai_report['risks']['clickjacking'] if audit.ai_report.get('risks') else 50 }},
-        sniffing: {{ audit.ai_report['risks']['sniffing'] if audit.ai_report.get('risks') else 50 }},
-        waf: {{ audit.ai_report['risks']['waf'] if audit.ai_report.get('risks') else 50 }}
+        mitm: {{ risks.get('mitm', 50)|int }},
+        xss: {{ risks.get('xss', 50)|int }},
+        clickjacking: {{ risks.get('clickjacking', 50)|int }},
+        sniffing: {{ risks.get('sniffing', 50)|int }},
+        waf: {{ risks.get('waf', 50)|int }}
     };
 
     new Chart(ctx, {
@@ -290,9 +292,20 @@
         }
     });
 
-    // 2. MARKDOWN REGEX FOR BOLD
+    // 2. MARKDOWN BOLD — construit en nœuds DOM (jamais innerHTML : texte LLM non fiable)
     document.querySelectorAll('.markdown-text').forEach(el => {
-        el.innerHTML = el.textContent.replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>');
+        const parts = el.textContent.split(/\*\*(.*?)\*\*/g);
+        el.textContent = '';
+        parts.forEach((part, i) => {
+            if (i % 2 === 1) {
+                const strong = document.createElement('strong');
+                strong.className = 'text-white font-bold';
+                strong.textContent = part;
+                el.appendChild(strong);
+            } else {
+                el.appendChild(document.createTextNode(part));
+            }
+        });
     });
 </script>
 
