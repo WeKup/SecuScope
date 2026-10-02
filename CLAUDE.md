@@ -47,6 +47,7 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 - Vocabulaire : « non intrusif » / « fingerprinting actif léger » — jamais
   « passif uniquement » ni « zéro-intrusion » (le code envoie une sonde active).
 - UI : dense, enterprise, couleur = sévérité. Pas de cliché IA (néon violet, blobs).
+- Commits : aucune ligne d'attribution (pas de Co-Authored-By, pas de "Generated with", pas de lien de session). Message seul.
 
 ## Façon de travailler avec moi (Maxime)
 
