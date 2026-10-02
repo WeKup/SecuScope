@@ -1,7 +1,7 @@
 # CLAUDE.md — SecuScope
 
 Lu automatiquement à chaque session. Garde-le court : c'est du contexte permanent,
-pas une doc. Le détail des tâches est dans `TASKS.md`.
+pas une doc. Le détail des tâches est dans `TASK.md`.
 
 ## Projet
 
@@ -12,7 +12,7 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 
 ## Démarrage d'une session
 
-1. Lire `TASKS.md` et reprendre la tâche en cours (ordre strict, une à la fois).
+1. Lire `TASK.md` et reprendre la tâche en cours (ordre strict, une à la fois).
 2. Pour l'UI : déléguer à l'agent `design-lead` et respecter `secuscope-ui-rules.md`.
 3. Ne lire que les fichiers nécessaires à la tâche ; ne pas re-scanner tout le repo.
 
@@ -59,5 +59,5 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 
 ## Hors périmètre
 
-- Partie 2 (DNS premium) : pas avant la fin des tâches 1→6 de `TASKS.md`.
+- Partie 2 (DNS premium) : pas avant la fin des tâches 1→6 de `TASK.md`.
 - Pas de migration React/Next sans demande explicite.
