@@ -105,9 +105,11 @@ flowchart LR
    └─ Rejet si NXDOMAIN
        │
        ▼
-3. Traitement concurrent (ThreadPoolExecutor, max_workers=2)
+3. Traitement concurrent (ThreadPoolExecutor, max_workers=4)
    ├─ get_ssl_info() : handshake TCP/443, lecture X.509, émetteur + échéance
-   └─ get_http_info() : requêtes curl_cffi (empreinte Chrome 120)
+   ├─ get_http_info() : requêtes curl_cffi (empreinte Chrome 120)
+   ├─ analyze_dns_security() : SPF, DMARC, DKIM (indice), DNSSEC, CAA, AXFR
+   └─ analyze_tls_deep() : sslyze (versions, ciphers faibles, forward secrecy), budget 30 s
        │
        ▼
 4. Fingerprinting WAF, Edge et en-têtes
@@ -123,7 +125,7 @@ flowchart LR
        │
        ▼
 6. Rapport structuré par LLM (app/services/ai.py)
-   ├─ Appel à l'API Google GenAI (retry sur erreur 503)
+   ├─ Appel à l'API Google GenAI (retry sur erreur 503), prompt enrichi du résumé DNS
    └─ Réponse JSON strict, sans balises externes
        │
        ▼
@@ -138,11 +140,13 @@ flowchart LR
 |---|---|
 | `app/__init__.py` | Application factory (`create_app`), initialisation SQLAlchemy, activation globale de `CSRFProtect`, enregistrement du blueprint. |
 | `app/routes.py` | `GET/POST /` : réception et stockage en session de la clé API Google GenAI (longueur bornée par `MAX_API_KEY_LENGTH` = 256) et du modèle cible (liste blanche `ALLOWED_MODELS`, repli sur `gemini-2.5-flash`) · `GET/POST /scan` : validation, exécution du pipeline, calcul du score, appel IA, insertion en base · `GET /dashboard/<int:audit_id>` : affichage des résultats avec contrôle d'appartenance par `session_id` · `GET /logout` : réinitialisation de session. |
-| `app/models.py` | Modèle `Audit` (SQLAlchemy) : `id`, `domain`, `timestamp` (UTC), `scan_data` (JSON brut : SSL, WAF, IP, serveurs, en-têtes, cookies), `ai_report` (JSON structuré), `score` (A–F), `numeric_score` (0–100), `session_id` (UUID). |
+| `app/models.py` | Modèle `Audit` (SQLAlchemy) : `id`, `domain`, `timestamp` (UTC), `scan_data` (JSON brut : SSL, WAF, IP, serveurs, en-têtes, cookies ; clés optionnelles `dns_security` et `tls_deep`, absentes des anciens audits), `ai_report` (JSON structuré), `score` (A–F), `numeric_score` (0–100), `session_id` (UUID). |
 | `app/services/scanner.py` | Moteur d'acquisition réseau (`curl_cffi`, `socket`, `ssl`). Détection des architectures fortement filtrées (« Forteresse ») et neutralisation du score global en cas d'anomalie majeure. |
+| `app/services/dns_security.py` | `analyze_dns_security(domain)` : SPF (terminaison), DMARC (politique `p=`), DKIM (sélecteurs courants uniquement, informatif), DNSSEC, CAA, tentative AXFR sur les NS (IP publiques seulement, timeout 3 s). Chaque contrôle est isolé : une erreur DNS donne `status: "error"` sans points. |
+| `app/services/tls_analysis.py` | `analyze_tls_deep(domain)` via `sslyze` : protocoles acceptés (SSLv2 à TLS 1.3), ciphers faibles (RC4, DES/3DES, EXPORT, NULL, MD5, anonymes), forward secrecy ; Heartbleed, ROBOT et CCS injection en information. Scan de l'IP publique résolue (anti-SSRF), budget global 30 s. Ne re-score pas le certificat. |
 | `app/services/signature.py` | `WAF_SIGNATURES` (15 architectures : Cloudflare, Akamai, Fastly, AWS CloudFront, Imperva, Azure Front Door, F5 BIG-IP, Sucuri, ModSecurity, Google Edge, etc.) · `INFRA_SIGNATURES` (corrélation CA TLS / zones DNS) · `TECH_SIGNATURES` (Nginx, Apache, LiteSpeed, Caddy, IIS, PHP, ASP.NET, Java, Node.js, Python) · `SECURITY_HEADERS` (référentiel des 6 en-têtes audités). |
 | `app/services/scoring.py` | Fonction déterministe d'évaluation à partir de `score_details`. |
-| `app/services/ai.py` | Client `google-genai` ; contraint le modèle à une sortie JSON exclusive. |
+| `app/services/ai.py` | Client `google-genai` ; contraint le modèle à une sortie JSON exclusive. Le prompt inclut un résumé de `dns_security` (AXFR ouvert signalé comme critique) ; un contrôle non vérifié n'est pas interprété comme une faille. |
 | `app/templates/` | Vues Jinja2 : `base.html` (design system, voir §3.6), `login.html`, `index.html` (saisie + loader de scan), `dashboard.html`, `components/vulnerability_chart.html`. |
 
 ### 3.4 Format du rapport LLM
@@ -177,7 +181,8 @@ flowchart LR
 | Base de données | PostgreSQL (`psycopg2-binary` 2.9.9) | 15 (alpine) |
 | Configuration | python-dotenv | 1.0.0 |
 | Client HTTP | requests / curl_cffi | 2.31.0 / ≥ 0.5.10 |
-| DNS | dnspython | 2.4.2 |
+| DNS (SPF/DMARC/DNSSEC/CAA/AXFR) | dnspython | 2.4.2 |
+| Analyse TLS approfondie | sslyze | 6.3.1 |
 | Fingerprinting WAF | wafw00f | 2.2.0 |
 | Validation | validators / pydantic | 0.22.0 / 2.5.2 |
 | Rotation User-Agent | fake-useragent | 1.5.1 |
@@ -279,9 +284,11 @@ SecuScope/
 │   ├── routes.py            # Routes HTTP et contrôle d'accès
 │   ├── services/
 │   │   ├── ai.py            # Client Google GenAI, contrainte de sortie JSON
+│   │   ├── dns_security.py  # SPF, DMARC, DKIM, DNSSEC, CAA, AXFR
 │   │   ├── scanner.py       # Moteur réseau (DNS, SSL, HTTP)
 │   │   ├── scoring.py       # Algorithme de notation
-│   │   └── signature.py     # Signatures WAF, Edge et stacks logicielles
+│   │   ├── signature.py     # Signatures WAF, Edge et stacks logicielles
+│   │   └── tls_analysis.py  # Analyse TLS approfondie (sslyze)
 │   └── templates/
 │       ├── base.html         # Layout + design system (tokens, composants)
 │       ├── login.html        # Saisie de la clé API et du modèle
@@ -295,7 +302,6 @@ SecuScope/
 ├── CLAUDE.md                 # Contexte permanent pour Claude Code
 ├── TASK.md                   # Feuille de route des tâches
 ├── Secuscope-UI-rules.md     # Règles UI (palette, mouvement, accessibilité)
-├── INTEGRATION_PLAN.md       # Plan de la partie 2 (scan DNS approfondi)
 ├── SECURITY_AND_LOGIC_REPORT.md
 ├── docker-compose.yml        # Orchestration web + db
 ├── Dockerfile                # Image applicative (python:3.11-slim)
@@ -370,6 +376,11 @@ SecuScope/
 - [x] Normalisation de l'URL saisie (`normalize_domain`)
 - [x] Rendu du rapport LLM sans injection HTML/JS (sortie traitée comme non fiable)
 - [x] Design system unique et refonte du dashboard (hero score/grade, matrice des en-têtes, grilles fluides)
+- [x] Analyse de sécurité DNS (SPF, DMARC, DKIM indicatif, DNSSEC, CAA, AXFR)
+- [x] Analyse TLS approfondie via sslyze (versions, ciphers faibles, forward secrecy)
+- [x] Rapport LLM nourri des findings DNS
+- [ ] Refonte du barème (plafond des bonus infra, classification critique)
+- [ ] Sections « Sécurité DNS » et « TLS approfondi » dans le dashboard
 - [ ] Refonte de `index.html` et `login.html` sur le design system
 - [ ] Durcissement production (gunicorn, `debug` piloté par `FLASK_DEBUG`, utilisateur non-root, healthcheck)
 - [ ] Déchargement du traitement réseau sur file asynchrone (Celery/Redis)
