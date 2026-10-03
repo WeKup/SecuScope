@@ -453,15 +453,18 @@ def analyze_target(domain):
     if not _has_only_public_ips(dns_d):
         return {"error": "PRIVATE_IP", "domain": domain}
 
-    # Import tardif : dns_security réutilise DNS_TIMEOUT et _is_public_ip d'ici.
+    # Imports tardifs : ces modules réutilisent DNS_TIMEOUT, _is_public_ip... d'ici.
     from app.services.dns_security import analyze_dns_security
+    from app.services.tls_analysis import analyze_tls_deep
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         f_ssl = ex.submit(get_ssl_info, domain)
         f_http = ex.submit(get_http_info, target_url, dns_d, domain)
         f_dns_sec = ex.submit(analyze_dns_security, domain)
+        f_tls_deep = ex.submit(analyze_tls_deep, domain)
         ssl_d, http_d = f_ssl.result(), f_http.result()
         dns_sec = f_dns_sec.result()
+        tls_deep = f_tls_deep.result()
 
     # KILL-SWITCH : Si critical_failure est activé, Score = 0
     if http_d.get("critical_failure"):
@@ -533,8 +536,9 @@ def analyze_target(domain):
         "cookies_security": http_d.get("cookies", []),
         "tech_stack": unique_tech,
         "dns_security": {k: v for k, v in dns_sec.items() if k != "score_details"},
+        "tls_deep": {k: v for k, v in tls_deep.items() if k != "details"},
         "score_details": (
             dns_d["details"] + ssl_d["details"] + http_d["details"]
-            + dns_sec["score_details"]
+            + dns_sec["score_details"] + tls_deep["details"]
         ),
     }
