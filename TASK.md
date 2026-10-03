@@ -70,6 +70,22 @@ README à jour (`007b165`).
    - Chart.js chargé sans version épinglée (`cdn.jsdelivr.net/npm/chart.js`) :
      épingler une version exacte (même problème que Motion `@latest`).
 
+## Recalibrage du barème (chantier dédié, à faire à froid)
+- PLAFOND : les bonus "géants" masquent les malus. Ex. google.com = 100/100 malgré TLS 1.0/1.1 acceptés + cipher faible, car +10 infra Google +20 "Sécurité gérée par Google" poussent au plafond de 100.
+- Revoir le poids des bonus infra : être hébergé chez Google/Cloudflare ≠ être bien configuré. Ne pas laisser l'hébergeur écraser les vraies faiblesses de config.
+- Aligner la classification critique/moyenne avec la gravité réelle : un AXFR ouvert ou du TLS obsolète devrait pouvoir être "critique" même sans atteindre -50 pts.
+- Fix prompt IA : clarifier que le statut "Géré par Infra" d'un en-tête = présent/protégé, PAS absent (sinon l'IA recommande à tort d'ajouter CSP sur google).
+
+## Front — section Sécurité DNS/TLS (à faire)
+- Trier les findings par sévérité : NÉGATIFS en premier (critiques → moyens → faibles → positifs). Principe : montrer d'abord ce qui demande une action.
+- BUG couleur : tags "Actif" (vert) / "Protégé" (indigo) inversés par rapport à la barre de couverture des en-têtes. Harmoniser : une couleur = un statut partout.
+- Ajouter une vraie section "Sécurité DNS" avec tags visibles (SPF, DMARC, DNSSEC, CAA, AXFR : présent/absent/vulnérable).
+- Ajouter une section "TLS approfondi" (versions, ciphers faibles, forward secrecy).
+
+## Architecture — scan asynchrone (chantier, justifié par sslyze ~30s)
+- Migrer le scan vers Celery + Redis : lancer → job_id → polling du statut → dashboard.
+- Refaire le loader pour afficher la VRAIE progression (remplace les faux timings GSAP actuels + "PROBES 6/6").
+
 ## Tâches, par priorité
 
 ### 1. Fix driver DB (BLOQUANT)
