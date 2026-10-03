@@ -20,9 +20,11 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 
 - `scan_data` garde ces clés (consommées par `dashboard.html`) : `domain, ip, ssl,
   waf_detected, server, headers, missing_headers, cookies_security, tech_stack,
-  score_details, numeric_score`.
+  score_details, numeric_score`. Clés optionnelles `dns_security` et `tls_deep` :
+  absentes du kill-switch et des anciens audits, toujours lues via `.get(..., {})`.
 - Routes CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`.
 - Scoring : préfixes `+N pts` / `-N pts`, base 50, borné [0,100], grade A–F.
+  En cours de refonte, voir `docs/SCORING_V2_SPEC.md`.
 - Erreurs `PRIVATE_IP` et `NXDOMAIN` gérées dans `routes.py`.
 - Anti-SSRF (`_is_public_ip`) jamais affaibli (private, loopback, link-local,
   multicast, reserved, unspecified).
@@ -33,8 +35,10 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 - `app/__init__.py` — factory `create_app`, config, CSRF, blueprint.
 - `app/routes.py` — routes, validation d'entrée, orchestration du scan.
 - `app/services/scanner.py` — moteur réseau (DNS, SSL, HTTP, cascade WAF).
+- `app/services/dns_security.py` — SPF, DMARC, DKIM (indice), DNSSEC, CAA, AXFR.
+- `app/services/tls_analysis.py` — sslyze : versions, ciphers faibles, PFS.
 - `app/services/scoring.py` — `calculate_trust_score`.
-- `app/services/ai.py` — client google-genai, extraction JSON robuste.
+- `app/services/ai.py` — client google-genai, extraction JSON robuste, résumé DNS.
 - `app/services/signature.py` — WAF/INFRA/TECH/SECURITY signatures.
 - `app/models.py` — modèle `Audit`.
 - `app/templates/` — `base.html`, `login.html`, `index.html`, `dashboard.html`,
@@ -59,5 +63,4 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 
 ## Hors périmètre
 
-- Partie 2 (DNS premium) : pas avant la fin des tâches 1→6 de `TASK.md`.
 - Pas de migration React/Next sans demande explicite.

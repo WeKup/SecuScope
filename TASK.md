@@ -15,12 +15,16 @@ Compose, rapport LLM via `google-genai`.
 
 ## Invariants — NE JAMAIS casser (vérifier après CHAQUE tâche)
 
-- `scan_data` garde exactement ces clés, consommées par `dashboard.html` :
+- `scan_data` garde ces clés, consommées par `dashboard.html` :
   `domain, ip, ssl, waf_detected, server, headers, missing_headers,
   cookies_security, tech_stack, score_details, numeric_score`.
+  Clés **optionnelles** (absentes du kill-switch HTTP et des anciens audits en base,
+  toujours les lire avec `.get(..., {})`) : `dns_security`, `tls_deep`.
 - Routes disponibles et compatibles CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`.
 - Scoring basé sur les préfixes `+N pts` / `-N pts` (regex `^([+-]\d+)\s*pts`).
   Base 50, borné [0,100], grade A/B/C/D/F.
+  **En cours de refonte, voir `docs/SCORING_V2_SPEC.md`.** Jusqu'à la
+  refonte, le format ci-dessus reste la règle.
 - Erreurs `PRIVATE_IP` et `NXDOMAIN` gérées par `routes.py`.
 - Anti-SSRF (`_is_public_ip`) jamais affaibli : refuse private, loopback,
   link-local, multicast, reserved, unspecified.
@@ -39,7 +43,36 @@ Compose, rapport LLM via `google-genai`.
 - Pour l'UI : déléguer à l'agent `design-lead` (voir `.claude/agents/design-lead.md`)
   et respecter `secuscope-ui-rules.md`.
 
-## Reprise — état au 02/10/2026
+## Reprise — état au 03/10/2026
+
+**Fait et commité :**
+- DNS profond dans le scanner : SPF, DMARC, DKIM (indice), DNSSEC, CAA, AXFR
+  (`app/services/dns_security.py`, `29838cb`). Clé `dns_security`.
+- IA nourrie des findings DNS (`ai.py`, `8d6502c`). Structure JSON inchangée.
+- TLS approfondi via sslyze : versions, ciphers faibles, forward secrecy
+  (`app/services/tls_analysis.py`, `facab29`). Clé `tls_deep`, budget 30 s.
+  Heartbleed/ROBOT/CCS : informatifs, aucun point.
+- Notes de chantiers (`78c833e`) : recalibrage barème, front DNS/TLS, scan async.
+
+**Pas encore validé :** aucun test bout en bout en conteneur pour DNS/TLS/IA
+(modules testés isolément, sslyze hors Flask). À faire en premier.
+
+**TODO rédaction (Maxime, à la main) :** reformuler le périmètre « non intrusif »
+du README (§1 capacités, « Périmètre d'exclusion », §2 dernière puce). La phrase
+« seule composante active = un GET unique » est fausse (AXFR vers les NS, scan
+TLS multi-versions, sonde sslyze). Rédaction sensible, ne pas toucher sans lui.
+
+### Ordre de reprise (chantiers restants)
+1. Test bout en bout Docker (`docker compose up --build`) : google.com et
+   `zonetransfer.me` (AXFR ouvert attendu).
+2. Finaliser `docs/SCORING_V2_SPEC.md` (brouillon du 03/10 : affiner les poids, plafond, bonus infra, classification critique).
+3. Appliquer le scoring V2 + fix prompt IA « Géré par Infra » = présent/protégé.
+4. Front DNS/TLS (agent `design-lead`) : sections, tri par sévérité, bug couleurs.
+5. UI `index.html` / `login.html` + restes tâche 4 (liste « Reste à faire » ci-dessous).
+6. Petits points : `.env.example`, `.gitattributes`, Chart.js épinglé, `counts.low`.
+7. Durcissement prod (tâche 3), puis scan asynchrone Celery/Redis, puis tests (tâche 6).
+
+## Historique — état au 02/10/2026
 
 **Fait :** tâche 1 (driver DB, vérifié en conteneur), tâche 2 (`normalize_domain`),
 fix XSS + injection JS du dashboard (`a08688b`), design system indigo dans
@@ -105,8 +138,13 @@ appelée à la place du `.strip()` actuel. Ne pas stripper `www.`.
 - Ajouter un `USER` non-root au `Dockerfile`.
 - Ajouter un `healthcheck` sur `db` + `depends_on: condition: service_healthy`.
 
-### 4. Cohérence passif / actif léger
-Le code envoie une sonde active (`/?id=1' OR '1'='1'`). Remplacer PARTOUT
+### 4. Cohérence passif / actif léger — PARTIELLE
+Fait : badge `index.html` (« Scanner externe non intrusif »), « autorisation écrite »
+dans le consentement. Footer de `base.html` : « Reconnaissance passive & fingerprinting
+actif léger » encore ambigu, à reformuler. Reste : `PROBES: 6/6`, faux timings du
+loader (→ chantier async), `<title>`, README (TODO Maxime ci-dessus).
+
+Énoncé d'origine : le code envoie une sonde active (`/?id=1' OR '1'='1'`). Remplacer PARTOUT
 « passif uniquement » / « zéro-intrusion » par « non intrusif » /
 « fingerprinting actif léger » : README + `base.html` (footer, `<title>`),
 `index.html` (badge, consentement, loader, barre du bas), et le compteur
@@ -123,12 +161,5 @@ Suite `tests/` (pytest) : normalisation d'URL, refus IP privée, refus sans
 consentement, parsing `score_details`, isolation par `session_id`,
 extraction JSON robuste de `ai.py`.
 
-### 7. (Plus tard) Partie 2 — Scan DNS profond premium
-Suivre le plan d'intégration existant. Blueprint séparé `dns_deep`, décorateur
-`premium_required`, réutiliser `Audit` + `calculate_trust_score`. NE PAS toucher
-`routes.py`, `scanner.py`, `index.html`, `dashboard.html`. Hors périmètre tant
-que 1→6 ne sont pas finis.
-
 ## Hors périmètre
-- Ne pas démarrer la Partie 2 avant la fin des tâches 1→6.
 - Ne pas migrer vers React/Next sans demande explicite (cf. `secuscope-ui-rules.md`).
