@@ -23,8 +23,11 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
   score_details, numeric_score`. Clés optionnelles `dns_security` et `tls_deep` :
   absentes du kill-switch et des anciens audits, toujours lues via `.get(..., {})`.
 - Routes CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`.
-- Scoring : préfixes `+N pts` / `-N pts`, base 50, borné [0,100], grade A–F.
-  En cours de refonte, voir `docs/SCORING_V2_SPEC.md`.
+- Scoring v2 (`docs/SCORING_V2_SPEC.md`) : 4 catégories /100 (TLS 35, en-têtes 25,
+  DNS 25, cookies 15), bonus infra +5 (max +10), caps par faille grave, grade A–F.
+  `scan_data` garde `numeric_score`, `score` et `score_details` (liste dégradée
+  `-N pts: ...` tant que le front n'est pas refait) ; détail réel dans la clé
+  optionnelle `score_breakdown` (à lire via `.get`).
 - Erreurs `PRIVATE_IP` et `NXDOMAIN` gérées dans `routes.py`.
 - Anti-SSRF (`_is_public_ip`) jamais affaibli (private, loopback, link-local,
   multicast, reserved, unspecified).

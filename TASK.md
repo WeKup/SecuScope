@@ -21,10 +21,10 @@ Compose, rapport LLM via `google-genai`.
   Clés **optionnelles** (absentes du kill-switch HTTP et des anciens audits en base,
   toujours les lire avec `.get(..., {})`) : `dns_security`, `tls_deep`.
 - Routes disponibles et compatibles CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`.
-- Scoring basé sur les préfixes `+N pts` / `-N pts` (regex `^([+-]\d+)\s*pts`).
-  Base 50, borné [0,100], grade A/B/C/D/F.
-  **En cours de refonte, voir `docs/SCORING_V2_SPEC.md`.** Jusqu'à la
-  refonte, le format ci-dessus reste la règle.
+- Scoring v2 (`docs/SCORING_V2_SPEC.md`) : 4 catégories /100 (TLS 35, en-têtes 25,
+  DNS 25, cookies 15), bonus infra +5 (max +10), caps, grade A/B/C/D/F.
+  `scan_data` garde `numeric_score`, `score` et `score_details` (liste dégradée
+  `-N pts: ...` en attendant le front) ; détail réel dans `score_breakdown` (optionnelle).
 - Erreurs `PRIVATE_IP` et `NXDOMAIN` gérées par `routes.py`.
 - Anti-SSRF (`_is_public_ip`) jamais affaibli : refuse private, loopback,
   link-local, multicast, reserved, unspecified.

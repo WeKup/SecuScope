@@ -84,6 +84,11 @@ def index():
             
         score_data = calculate_trust_score(scan_res)
         scan_res['numeric_score'] = score_data['numeric']
+        scan_res['score'] = score_data['letter']
+        # score_details : vue dégradée "-N pts: ..." pour l'ancien dashboard ;
+        # score_breakdown : le vrai détail par catégorie (futur front).
+        scan_res['score_details'] = score_data['details']
+        scan_res['score_breakdown'] = {k: score_data[k] for k in ('categories', 'infra_bonus', 'raw_score', 'cap')}
         ai_res = generate_report(scan_res, api_key=session['user_api_key'], model_id=session['user_model_id'])
         
         audit = Audit(

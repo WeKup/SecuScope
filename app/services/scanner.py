@@ -282,6 +282,7 @@ def _audit_cookies(resp):
             parsed_by_name[name] = {
                 "secure": bool(morsel["secure"]),
                 "httponly": bool(morsel["httponly"]),
+                "samesite": morsel["samesite"],
             }
 
     results = []
@@ -292,6 +293,8 @@ def _audit_cookies(resp):
         status = []
         status.append("Secure" if secure else "Insecure")
         status.append("HttpOnly" if httponly else "No HttpOnly")
+        samesite = attrs.get("samesite", "")
+        status.append(f"SameSite={samesite.capitalize()}" if samesite else "No SameSite")
         icon = "✅" if secure and httponly else "❌"
         results.append(f"{name}: {icon} {', '.join(status)}")
 
@@ -474,20 +477,17 @@ def analyze_target(domain):
             "waf_detected": "Non détecté", "server": "Non Sécurisé", 
             "headers": {}, "missing_headers": list(SECURITY_HEADERS.values()), 
             "cookies_security": [], "tech_stack": ["HTTP Non Forcé"], 
-            "score_details": http_d["details"] + ["🚨 SCORE ANNULÉ"]
+            "score_details": http_d["details"] + ["🚨 SCORE ANNULÉ"],
+            "critical_failure": True,
         }
 
-    # Inférence & Bonus
-    infrastructure_detected = False
-    premium_provider = None
+    # Inférence infra
     current_waf = http_d.get("waf", "Non détecté")
 
     # FIX FORTERESSE (Manquant dans ton code)
     if "Forteresse" in current_waf:
         ssl_d["valid"] = True
         ssl_d["issuer"] = "Protégé par Firewall"
-        infrastructure_detected = True
-        premium_provider = "Firewall Haut Niveau"
         if "+20 pts: SSL opérationnel" not in ssl_d["details"]:
             ssl_d["details"].append("+20 pts: SSL Valide (Handshake OK)")
 
@@ -504,23 +504,12 @@ def analyze_target(domain):
         dns_match = any(s.lower() in ptr_str for s in sigs["dns"])
         
         if ssl_match or dns_match:
-            infrastructure_detected = True
-            premium_provider = provider
             if ssl_match: ssl_d["issuer"] = provider 
             if "Non détecté" in current_waf: current_waf = sigs["waf"]
             http_d["details"].append(f"+10 pts: Infrastructure {provider} détectée")
             break
             
     http_d["waf"] = current_waf
-
-    # Bonus Géants
-    premium_list = ["Google", "Amazon", "Akamai", "Cloudflare", "Microsoft", "Firewall", "Firewall Haut Niveau"]
-    if infrastructure_detected and ssl_d["valid"] and any(p in str(premium_provider) for p in premium_list):
-        http_d["details"].append(f"+20 pts: Sécurité gérée par {premium_provider}")
-        if http_d["missing"]:
-            http_d["missing"] = []
-            for h in list(http_d["headers"].keys()):
-                if "Manquant" in str(http_d["headers"][h]): http_d["headers"][h] = "🛡️ Géré par Infra"
 
     unique_tech = list(dict.fromkeys(http_d["tech"]))
     if not unique_tech and "Inaccessible" not in http_d["waf"]: unique_tech = ["Obfusqué (Sécurisé)"]

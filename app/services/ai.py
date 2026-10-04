@@ -149,6 +149,7 @@ Données collectées :
 - Stack technique : {scan_data.get('tech_stack', [])}
 - Headers présents : {[k for k,v in scan_data.get('headers', {}).items() if '✅' in str(v)]}
 - Headers manquants : {scan_data['missing_headers']}
+  (réellement absents de la réponse HTTP ; un CDN/WAF n'implique aucune protection de leur part, recommande de les ajouter)
 - Cookies : {scan_data.get('cookies_security', [])}
 
 Sécurité DNS / e-mail :
