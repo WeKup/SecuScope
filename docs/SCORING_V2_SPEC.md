@@ -1,112 +1,163 @@
-# Spec — Refonte du scoring SecuScope (v2 : catégories + caps)
+# Spec — Scoring SecuScope v2 (catégories + caps)
 
-> Décision d'architecture prise le 03/10/2026. Poids à affiner demain avant implémentation.
-> Inspiré du modèle SSL Labs (notation par catégorie + plafonnement par faille grave).
-
----
-
-## Le problème du scoring v1 (actuel)
-
-Système purement **additif** : base 50, on empile des `+N/-N pts`, borné à 100.
-Deux défauts constatés en test :
-1. **Effet plafond** : les bonus dépassent 100, donc les malus sont absorbés.
-   → google.com = 100/100 malgré TLS 1.0/1.1 acceptés + cipher faible.
-2. **Dimensions interchangeables** : un bonus infra compense une faille TLS, ce
-   qui n'a aucun sens — être hébergé chez Google ne répare pas un cipher faible.
-
-**Racine** : un système additif traite toutes les dimensions comme fongibles.
-Or en sécurité, une chaîne vaut son maillon le plus faible.
+> Finalisée le 04/10/2026. Prête pour implémentation.
+> Modèle inspiré de SSL Labs : notation par catégorie + plafonnement par faille grave.
 
 ---
 
-## Les 2 principes de la v2
+## 1. Le problème du scoring v1
 
-### 1. Notation par catégories étanches
-Chaque dimension est notée séparément (sur 100), puis agrégée par moyenne
-pondérée. Une faille dans une catégorie ne peut PAS être compensée par une
-autre.
-
-### 2. Caps (plafonnement par faille grave)
-Certaines failles imposent un plafond au score final, quels que soient les
-autres mérites. Analogie du contrôle technique : freins morts = recalé, peu
-importe la carrosserie. SSL Labs fait ça (SSLv3 → note max C).
+Système additif : base 50, on empile des `+N/-N pts`, borné à 100. Défauts :
+- **Effet plafond** : les bonus dépassent 100, les malus sont absorbés.
+  google.com = 100/100 malgré TLS 1.0/1.1 + cipher faible.
+- **Dimensions interchangeables** : un bonus infra compense une faille TLS.
+- **« Géré par Infra » trompeur** : le scanner requalifie les en-têtes ABSENTS
+  en « protégés » dès qu'un CDN est détecté → gonfle le score à tort.
 
 ---
 
-## Architecture proposée
+## 2. Principes de la v2
 
-### Catégories et poids (PROPOSÉS — à valider demain)
+1. **Catégories étanches** : chaque dimension notée /100 séparément, puis moyenne
+   pondérée. Une faille dans une catégorie ne peut pas être compensée par une autre.
+2. **Part de 100, on déduit** : chaque catégorie part d'une config parfaite, on
+   déduit pour chaque problème (absence de protection OU faiblesse active).
+   Plancher à 0. Gère les deux cas de la même façon.
+3. **Caps** : une faille grave plafonne le score final, quels que soient les
+   autres mérites (analogie contrôle technique : freins morts = recalé).
+4. **On observe, on ne suppose jamais** : un en-tête compte comme présent
+   seulement s'il est réellement dans la réponse HTTP. Pas de « Géré par Infra ».
 
-| Catégorie | Poids | Contenu |
-|---|---|---|
-| **TLS/SSL** | 35 % | certificat valide, versions acceptées, ciphers, forward secrecy |
-| **En-têtes HTTP** | 25 % | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer, Permissions |
-| **DNS** | 25 % | SPF, DMARC, DNSSEC, CAA, AXFR |
-| **Cookies** | 15 % | Secure, HttpOnly par cookie |
-| **Total** | 100 % | |
+---
 
-Chaque catégorie est notée 0–100 selon ses propres contrôles.
+## 3. Notation par catégorie (chacune part de 100, plancher 0)
 
-### L'infrastructure = bonus plafonné, PAS une catégorie
-Être derrière un WAF/CDN (Cloudflare, Akamai...) donne un **petit bonus final**
-(ex. +5 à +10 points max), mais **ne peut jamais** transformer un mauvais score
-en bon. L'hébergeur n'est pas la configuration.
-
-### Caps (plafonds déclenchés par faille grave)
-
-| Faille | Plafond imposé |
+### TLS/SSL
+| Problème | Déduction |
 |---|---|
-| HTTP en clair / HTTPS non forcé | **F** (score ≤ 20) — kill-switch actuel conservé |
-| Certificat TLS invalide / expiré / mismatch | **D** (≤ 50) |
-| SSLv2 ou SSLv3 accepté | **C** (≤ 70) |
-| Transfert de zone AXFR ouvert | **C** (≤ 70) |
+| Certificat invalide / expiré / mismatch | −40 (+ cap D) |
+| SSLv2 ou SSLv3 accepté | −40 (+ cap C) |
+| TLS 1.0 ou 1.1 accepté | −20 |
+| Cipher suite **cassée** (RC4, DES, EXPORT, NULL, MD5, anonyme) | −25 |
+| Cipher suite **legacy** (3DES) | −15 |
+| Pas de forward secrecy | −20 |
 
-### Formule d'agrégation
-```
-1. Pour chaque catégorie : note_cat = contrôles de la catégorie (0–100)
-2. score = Σ (note_cat × poids_cat)
-3. score = score + bonus_infra (plafonné, ex. +10 max)
-4. score = min(score, 100)
-5. Appliquer les caps : score = min(score, plafond le plus bas déclenché)
-6. Convertir en grade A–F
-```
+> Distinction des ciphers : RC4/DES/EXPORT/NULL sont réellement cassés (attaque
+> pratique) → −25. 3DES est seulement vieux (Sweet32, difficile à exploiter) →
+> −15. SSL Labs fait la même distinction.
+| TLS 1.3 non supporté | −10 |
+
+### En-têtes HTTP (déductions = 100 au total → site sans rien = 0)
+| En-tête absent | Déduction |
+|---|---|
+| CSP (Content-Security-Policy) | −25 |
+| HSTS (Strict-Transport-Security) | −25 |
+| X-Frame-Options (anti-clickjacking) | −20 |
+| X-Content-Type-Options (anti-MIME) | −15 |
+| Referrer-Policy | −8 |
+| Permissions-Policy | −7 |
+
+> **Présence = observée dans la réponse HTTP uniquement.** Peu importe qui pose
+> l'en-tête (serveur ou CDN) : s'il est dans la réponse, il compte ; s'il est
+> absent, il est absent, même derrière un CDN. On SUPPRIME la requalification
+> « Géré par Infra » du scanner. (HSTS vérifié aussi sur `www.` = observation
+> légitime, on garde.)
+
+### DNS
+| Problème | Déduction |
+|---|---|
+| SPF absent ou `+all` | −25 |
+| DMARC absent | −25 (`p=none` : −12) |
+| AXFR (transfert de zone) ouvert | −30 (+ cap C) |
+| DNSSEC absent | −12 |
+| CAA absent | −8 |
+| DKIM | informatif, 0 (6 sélecteurs testés, non exhaustif) |
+
+### Cookies
+- **Aucun cookie → 100** (rien à risque, neutre).
+- Sinon : moyenne sur les cookies de **(Secure 0,4 + HttpOnly 0,4 + SameSite 0,2)**, × 100.
+- SameSite : petit poids car les navigateurs appliquent `Lax` par défaut depuis 2020.
+
+---
+
+## 4. Poids des catégories
+
+| Catégorie | Poids |
+|---|---|
+| TLS/SSL | 35 % |
+| En-têtes HTTP | 25 % |
+| DNS | 25 % |
+| Cookies | 15 % |
+
+---
+
+## 5. Bonus infrastructure
+
+WAF/CDN détecté (Cloudflare, Akamai, Google Edge...) = **+5** (plafonné à **+10**
+si plusieurs couches). Justification : un WAF filtre réellement des attaques
+(DoS/DDoS, patterns connus). Appliqué AVANT les caps → ne peut jamais racheter
+une faille grave ni transformer un site mal configuré en bon score.
+
+---
+
+## 6. Caps (plafonds déclenchés par faille grave)
+
+| Faille | Score maximum autorisé |
+|---|---|
+| HTTP en clair / HTTPS non forcé | **20** (F) — kill-switch |
+| Certificat TLS invalide / expiré / mismatch | **59** (D) |
+| SSLv2 ou SSLv3 accepté | **79** (C) |
+| AXFR ouvert | **79** (C) |
+
 Le cap prend le **minimum** entre le score calculé et le plafond de la pire
-faille. Une faille grave tire le score vers le bas, elle ne se noie pas dans
-la moyenne.
-
-### Grades (seuils actuels conservés)
-A ≥ 90 · B 80–89 · C 60–79 · D 40–59 · F < 40
+faille déclenchée.
 
 ---
 
-## Effet attendu (validation de la direction)
+## 7. Formule d'agrégation
 
-- **google.com** (TLS 1.0/1.1 + cipher faible) : catégorie TLS pénalisée →
-  descend à un **B honnête** au lieu d'un A artificiel. Juste.
-- **Petit site bien configuré, sans gros CDN** : peut atteindre **A**, car on
-  note la config, pas l'hébergeur. Juste.
-- **zonetransfer.me** (AXFR ouvert) : cappé à **C** quoi qu'il arrive, même
-  avec un bon TLS. Juste.
-
----
-
-## À faire demain
-
-1. **Affiner les poids** des catégories (35/25/25/15 à discuter).
-2. **Définir la note interne de chaque catégorie** : comment TLS passe de ses
-   contrôles (versions, ciphers, PFS) à une note /100, idem pour les autres.
-3. **Finaliser la liste des caps** et leurs plafonds.
-4. **Réécrire `scoring.py`** selon cette structure.
-5. **Adapter le dashboard** : afficher la note PAR catégorie (plus lisible et
-   plus pro qu'une liste de `+/- pts`), et indiquer quand un cap s'est appliqué
-   (« Note plafonnée à C : transfert de zone AXFR ouvert »).
-6. **Fix prompt IA** : « Géré par Infra » = en-tête présent/protégé, pas absent.
+```
+1. Pour chaque catégorie : note_cat = 100 − Σ déductions   (plancher 0)
+2. score = Σ (note_cat × poids_cat)                         # 0–100
+3. score = score + bonus_infra                              # +5, max +10
+4. score = min(score, 100)
+5. score = min(score, plafond le plus bas déclenché par un cap)
+6. grade : A ≥ 90 · B 80–89 · C 60–79 · D 40–59 · F < 40
+```
 
 ---
 
-## À retenir pour un entretien
+## 8. Effet attendu (validation)
 
-« J'ai refondu le scoring en notation par catégories pondérées avec
-plafonnement par faille grave, inspiré de SSL Labs : une faille critique
-plafonne la note au lieu d'être noyée dans une moyenne, et la qualité de
-l'hébergeur ne peut pas masquer une mauvaise configuration. »
+- **google.com** (TLS 1.0/1.1 + 3DES, 3 en-têtes réellement absents) :
+  TLS ≈ 55/100, En-têtes pénalisés (plus de « Géré par Infra » qui pardonne)
+  → descend à un **B honnête** au lieu d'un A artificiel.
+- **Petit site bien configuré, sans CDN** : peut atteindre **A** (on note la
+  config, pas l'hébergeur).
+- **zonetransfer.me** (AXFR ouvert) : **cappé à C** quoi qu'il arrive.
+
+---
+
+## 9. Changements de code impliqués
+
+1. **Réécrire `scoring.py`** selon cette structure (catégories + poids + caps).
+   Le format `+N/-N pts` disparaît au profit de notes par catégorie.
+2. **`scanner.py`** : SUPPRIMER la requalification des en-têtes manquants en
+   « Géré par Infra » quand une infra premium est détectée. Garder l'observation
+   brute de `get_http_info`.
+3. **`scanner.py` / `_audit_cookies`** : ajouter l'extraction de l'attribut
+   **SameSite** (petit poids dans la note cookies).
+4. **`tls_analysis.py`** : exposer proprement les éléments nécessaires au scoring
+   TLS (versions acceptées, ciphers faibles, PFS).
+5. **`ai.py`** : « Géré par Infra » n'existe plus → l'IA voit les en-têtes
+   réellement absents comme absents (elle a raison de recommander de les ajouter).
+6. **Dashboard** (chantier front séparé) : afficher la note PAR catégorie, et
+   indiquer quand un cap s'est appliqué (« Note plafonnée à C : AXFR ouvert »).
+7. **Invariant CLAUDE.md** : la règle scoring `+N/-N pts` est remplacée par ce
+   modèle. Mettre à jour l'invariant.
+
+---
+
+## 10. TODO ultérieurs (hors refonte)
+- Classification critique/moyenne/faible à aligner sur les caps (un cap = critique).
+- SameSite : déjà intégré ici (petit poids).
