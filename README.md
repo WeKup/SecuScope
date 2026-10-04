@@ -38,8 +38,8 @@ Il identifie l'infrastructure de bordure d'une application (CDN, WAF, reverse pr
 | **Fingerprinting Edge/WAF en cascade** | Trois niveaux successifs : (1) `wafw00f`, (2) signatures passives multi-signaux (en-têtes, cookies, corps de réponse, CNAME/NS), (3) sonde active légère (une requête `GET /?id=1' OR '1'='1` observant uniquement le code de statut retourné — 403/406/429/501 — pour confirmer une interception périmétrique). |
 | **Inférence d'infrastructure** | Corrélation entre autorité de certification TLS et enregistrements DNS pour identifier la plateforme (Cloudflare, Akamai, AWS CloudFront, Azure Front Door, Fastly, Imperva, Google Edge, etc. — 15 architectures couvertes). |
 | **Analyse heuristique SSL/TLS** | Vérification du port 443, validation de la chaîne X.509, contrôle de la date d'expiration, identification de l'autorité de confiance, gestion des architectures fortement filtrées. |
-| **Audit des en-têtes & cookies** | Contrôle de conformité de 6 en-têtes de sécurité (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy), vérification de la redirection HTTPS forcée, contrôle des flags `Secure` et `HttpOnly` sur les cookies. |
-| **Notation heuristique normalisée** | Score 0–100 et grade A–F : base de 50 points, addition/déduction par signal (ex. +20 SSL valide, +15 WAF identifié, +5 par en-tête conforme), mise à zéro immédiate en cas de défaillance critique (repli HTTP en clair). |
+| **Audit des en-têtes & cookies** | Contrôle de conformité de 6 en-têtes de sécurité (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy), vérification de la redirection HTTPS forcée, contrôle des attributs `Secure`, `HttpOnly` et `SameSite` sur les cookies. |
+| **Notation par catégories pondérées** | Score 0–100 et grade A–F : quatre catégories notées sur 100 (TLS, en-têtes, DNS, cookies, poids 35/25/25/15), bonus d'infrastructure limité (+5, max +10), puis plafonnement de la note par les failles graves (HTTP en clair, certificat invalide, SSLv2/SSLv3, transfert de zone ouvert). Voir [§3.7](#37-modèle-de-scoring-v2). |
 | **Rapport structuré par LLM** | Agrégation des signaux transmis à l'API Google GenAI, réponse contrainte au format JSON (résumé directionnel, axes techniques prioritaires, score d'exposition par vecteur). |
 
 ### Périmètre d'exclusion
@@ -113,15 +113,16 @@ flowchart LR
        │
        ▼
 4. Fingerprinting WAF, Edge et en-têtes
-   ├─ Vérification du forçage HTTPS (rejet si redirection HTTP en clair)
+   ├─ Vérification du forçage HTTPS (HTTP en clair ou HTTPS non forcé : note plafonnée à 20)
    ├─ Cascade WAF : (1) wafw00f → (2) signatures passives → (3) sonde active légère
    ├─ Identification de la stack logicielle et audit des en-têtes de protection
    └─ Inférence d'infrastructure (autorités TLS + zones DNS)
        │
        ▼
-5. Notation algorithmique (app/services/scoring.py)
-   ├─ Base de 50 points, sommation selon score_details
-   └─ Bornage [0, 100] + attribution du grade (A à F)
+5. Notation par catégories (app/services/scoring.py)
+   ├─ Quatre catégories notées /100 (TLS, en-têtes, DNS, cookies), moyenne pondérée 35/25/25/15
+   ├─ Bonus d'infrastructure (+5, max +10), puis plafonds par faille grave
+   └─ Grade A à F ; détail par catégorie stocké dans scan_data["score_breakdown"]
        │
        ▼
 6. Rapport structuré par LLM (app/services/ai.py)
@@ -140,14 +141,14 @@ flowchart LR
 |---|---|
 | `app/__init__.py` | Application factory (`create_app`), initialisation SQLAlchemy, activation globale de `CSRFProtect`, enregistrement du blueprint. |
 | `app/routes.py` | `GET/POST /` : réception et stockage en session de la clé API Google GenAI (longueur bornée par `MAX_API_KEY_LENGTH` = 256) et du modèle cible (liste blanche `ALLOWED_MODELS`, repli sur `gemini-2.5-flash`) · `GET/POST /scan` : validation, exécution du pipeline, calcul du score, appel IA, insertion en base · `GET /dashboard/<int:audit_id>` : affichage des résultats avec contrôle d'appartenance par `session_id` · `GET /logout` : réinitialisation de session. |
-| `app/models.py` | Modèle `Audit` (SQLAlchemy) : `id`, `domain`, `timestamp` (UTC), `scan_data` (JSON brut : SSL, WAF, IP, serveurs, en-têtes, cookies ; clés optionnelles `dns_security` et `tls_deep`, absentes des anciens audits), `ai_report` (JSON structuré), `score` (A–F), `numeric_score` (0–100), `session_id` (UUID). |
-| `app/services/scanner.py` | Moteur d'acquisition réseau (`curl_cffi`, `socket`, `ssl`). Détection des architectures fortement filtrées (« Forteresse ») et neutralisation du score global en cas d'anomalie majeure. |
+| `app/models.py` | Modèle `Audit` (SQLAlchemy) : `id`, `domain`, `timestamp` (UTC), `scan_data` (JSON brut : SSL, WAF, IP, serveurs, en-têtes, cookies ; clés optionnelles `dns_security`, `tls_deep` et `score_breakdown` — détail du score par catégorie —, absentes des anciens audits ; `critical_failure` présent uniquement en cas d'arrêt du scan sur HTTP en clair), `ai_report` (JSON structuré), `score` (A–F), `numeric_score` (0–100), `session_id` (UUID). |
+| `app/services/scanner.py` | Moteur d'acquisition réseau (`curl_cffi`, `socket`, `ssl`). Détection des architectures fortement filtrées (« Forteresse »). En cas de HTTP en clair ou de connexion HTTPS impossible, le scan s'arrête et renvoie `critical_failure` : la note est alors plafonnée à 20. |
 | `app/services/dns_security.py` | `analyze_dns_security(domain)` : SPF (terminaison), DMARC (politique `p=`), DKIM (sélecteurs courants uniquement, informatif), DNSSEC, CAA, tentative AXFR sur les NS (IP publiques seulement, timeout 3 s). Chaque contrôle est isolé : une erreur DNS donne `status: "error"` sans points. |
 | `app/services/tls_analysis.py` | `analyze_tls_deep(domain)` via `sslyze` : protocoles acceptés (SSLv2 à TLS 1.3), ciphers faibles (RC4, DES/3DES, EXPORT, NULL, MD5, anonymes), forward secrecy ; Heartbleed, ROBOT et CCS injection en information. Scan de l'IP publique résolue (anti-SSRF), budget global 30 s. Ne re-score pas le certificat. |
 | `app/services/signature.py` | `WAF_SIGNATURES` (15 architectures : Cloudflare, Akamai, Fastly, AWS CloudFront, Imperva, Azure Front Door, F5 BIG-IP, Sucuri, ModSecurity, Google Edge, etc.) · `INFRA_SIGNATURES` (corrélation CA TLS / zones DNS) · `TECH_SIGNATURES` (Nginx, Apache, LiteSpeed, Caddy, IIS, PHP, ASP.NET, Java, Node.js, Python) · `SECURITY_HEADERS` (référentiel des 6 en-têtes audités). |
-| `app/services/scoring.py` | Fonction déterministe d'évaluation à partir de `score_details`. |
+| `app/services/scoring.py` | `calculate_trust_score` : notation par catégories pondérées, bonus d'infrastructure et plafonds (voir §3.7). Renvoie la note, le grade, le détail par catégorie et le plafond éventuellement appliqué ; fournit aussi `score_details` (lignes `-N pts: …`), vue dégradée conservée pour compatibilité. |
 | `app/services/ai.py` | Client `google-genai` ; contraint le modèle à une sortie JSON exclusive. Le prompt inclut un résumé de `dns_security` (AXFR ouvert signalé comme critique) ; un contrôle non vérifié n'est pas interprété comme une faille. |
-| `app/templates/` | Vues Jinja2 : `base.html` (design system, voir §3.6), `login.html`, `index.html` (saisie + loader de scan), `dashboard.html`, `components/vulnerability_chart.html`. |
+| `app/templates/` | Vues Jinja2 : `base.html` (design system, voir §3.6), `login.html`, `index.html` (saisie + loader de scan), `dashboard.html`, `components/vulnerability_chart.html`, `components/check_row.html` (macro des lignes DNS/TLS). |
 
 ### 3.4 Format du rapport LLM
 
@@ -195,10 +196,32 @@ flowchart LR
 
 - **Design system unique** dans `base.html` : tokens de couleur en variables CSS (`--ss-*`) branchés sur la config Tailwind, composants `@layer components` (carte, badge, bouton, input, table dense, jauge, tooltip) et tokens de mouvement. Le mode sombre est le mode par défaut ; les valeurs du mode clair sont définies mais pas encore activées. Les règles complètes sont dans `Secuscope-UI-rules.md`.
 - **Codage couleur** : l'indigo est réservé à l'interface et à la télémétrie neutre ; rouge, orange, jaune et vert encodent uniquement un niveau de risque, toujours doublés d'un libellé texte.
-- **Dashboard** : score et grade en tête (jauge graduée sur les seuils A–F de `scoring.py`), matrice des en-têtes triée par risque avec l'impact réel de chaque critère, cookies, infrastructure TLS/WAF, détail du calcul du score, analyse IA, radar et répartition des failles. Mise en page fluide (`repeat(auto-fit, minmax(...))`, largeur plafonnée à 1600px).
+- **Dashboard** : score et grade en tête (jauge graduée sur les seuils A–F), bandeau de plafond lorsqu'une faille grave limite la note, notes par catégorie avec leur poids et leurs déductions, matrice des en-têtes triée par risque, sections « TLS / SSL » et « DNS & messagerie » (problèmes d'abord), cookies, infrastructure, analyse IA, radar et répartition des failles. Les audits antérieurs au scoring v2 gardent l'ancien affichage (« Barème v1 »). Mise en page fluide (`repeat(auto-fit, minmax(...))`, largeur plafonnée à 1600px).
 - **Accessibilité** : contraste AA calculé sur chaque paire texte/fond, focus clavier visible, `role="meter"` sur la jauge, `prefers-reduced-motion` respecté par le CSS, le compteur du score et Chart.js.
 - **Sortie LLM traitée comme non fiable** : le gras markdown du rapport est reconstruit en nœuds DOM (jamais `innerHTML`) et les scores `risks` sont forcés en entier avant d'entrer dans le JavaScript, ce qui ferme la voie à une injection pilotée par prompt injection depuis le site scanné.
 - **Cookies de session durcis** : `HttpOnly`, `SameSite=Lax`, durée de vie de 4 h, et `Secure` activable via `SESSION_COOKIE_SECURE`.
+
+### 3.7 Modèle de scoring v2
+
+Spécification complète : [`docs/SCORING_V2_SPEC.md`](./docs/SCORING_V2_SPEC.md). Principe inspiré de SSL Labs : chaque catégorie part de 100 et déduit pour chaque problème observé, une faille grave plafonne la note finale au lieu d'être noyée dans une moyenne, et un en-tête n'est compté présent que s'il figure réellement dans la réponse HTTP (peu importe qui le pose).
+
+| Catégorie | Poids | Principales déductions |
+|---|:---:|---|
+| TLS/SSL | 35 % | Certificat invalide −40 · SSLv2/SSLv3 −40 · TLS 1.0/1.1 −20 · cipher cassé −25 (RC4, DES, EXPORT, NULL, MD5, anonyme) ou legacy −15 (3DES) · pas de forward secrecy −20 · TLS 1.3 absent −10 |
+| En-têtes HTTP | 25 % | CSP −25 · HSTS −25 · X-Frame-Options −20 · X-Content-Type-Options −15 · Referrer-Policy −8 · Permissions-Policy −7 |
+| DNS | 25 % | SPF absent ou `+all` −25 · DMARC absent −25 (`p=none` −12) · AXFR ouvert −30 · DNSSEC absent −12 · CAA absent −8 (DKIM informatif) |
+| Cookies | 15 % | Moyenne par cookie de `Secure` (0,4) + `HttpOnly` (0,4) + `SameSite` (0,2) ; aucun cookie = 100 |
+
+Score = Σ (note de catégorie × poids) + bonus d'infrastructure (WAF/CDN détecté : +5, plafonné à +10), borné à 100, puis limité par le plafond le plus bas déclenché :
+
+| Faille | Note maximale |
+|---|:---:|
+| HTTP en clair / HTTPS non forcé | 20 (F) |
+| Certificat TLS invalide, expiré ou ne correspondant pas au domaine | 59 (D) |
+| SSLv2 ou SSLv3 accepté | 79 (C) |
+| Transfert de zone AXFR ouvert | 79 (C) |
+
+Grades : A ≥ 90 · B 80–89 · C 60–79 · D 40–59 · F < 40. Le détail (notes par catégorie, déductions, bonus, plafond) est stocké dans `scan_data["score_breakdown"]` et affiché par le dashboard.
 
 ---
 
@@ -252,7 +275,7 @@ docker compose down -v
 
 1. Ouvrir `http://localhost:5000`, renseigner la clé d'API Google GenAI et le modèle souhaité.
 2. Sur `/scan`, saisir le domaine cible, cocher l'engagement de consentement légal, lancer l'audit.
-3. Consulter le résultat sur `/dashboard/<audit_id>` : score/grade, matrice des en-têtes, cookies, infrastructure (TLS, WAF), détail du calcul du score et rapport LLM. Le barème complet A–F est accessible depuis le bouton « Barème ».
+3. Consulter le résultat sur `/dashboard/<audit_id>` : score/grade, matrice des en-têtes, cookies, infrastructure (TLS, WAF), sections TLS et DNS, notes par catégorie (avec plafond éventuel) et rapport LLM. Le barème complet A–F est accessible depuis le bouton « Barème ».
 
 ---
 
@@ -286,7 +309,7 @@ SecuScope/
 │   │   ├── ai.py            # Client Google GenAI, contrainte de sortie JSON
 │   │   ├── dns_security.py  # SPF, DMARC, DKIM, DNSSEC, CAA, AXFR
 │   │   ├── scanner.py       # Moteur réseau (DNS, SSL, HTTP)
-│   │   ├── scoring.py       # Algorithme de notation
+│   │   ├── scoring.py       # Scoring v2 : catégories pondérées + plafonds
 │   │   ├── signature.py     # Signatures WAF, Edge et stacks logicielles
 │   │   └── tls_analysis.py  # Analyse TLS approfondie (sslyze)
 │   └── templates/
@@ -295,7 +318,11 @@ SecuScope/
 │       ├── index.html        # Formulaire de scan + loader
 │       ├── dashboard.html    # Restitution de l'audit
 │       └── components/
+│           ├── check_row.html          # Macro : ligne de contrôle DNS/TLS
 │           └── vulnerability_chart.html
+├── docs/
+│   ├── SCORING_V2_SPEC.md    # Spécification du scoring v2
+│   └── archive/              # Documents archivés
 ├── .claude/agents/           # Agent design-lead (Claude Code)
 ├── .env.example              # Gabarit de configuration
 ├── .gitignore
@@ -379,8 +406,8 @@ SecuScope/
 - [x] Analyse de sécurité DNS (SPF, DMARC, DKIM indicatif, DNSSEC, CAA, AXFR)
 - [x] Analyse TLS approfondie via sslyze (versions, ciphers faibles, forward secrecy)
 - [x] Rapport LLM nourri des findings DNS
-- [ ] Refonte du barème (plafond des bonus infra, classification critique)
-- [ ] Sections « Sécurité DNS » et « TLS approfondi » dans le dashboard
+- [x] Refonte du barème : scoring par catégories pondérées avec plafonds (bonus infra limité, classification critique alignée sur les plafonds)
+- [x] Sections « DNS & messagerie » et « TLS / SSL » approfondi dans le dashboard
 - [ ] Refonte de `index.html` et `login.html` sur le design system
 - [ ] Durcissement production (gunicorn, `debug` piloté par `FLASK_DEBUG`, utilisateur non-root, healthcheck)
 - [ ] Déchargement du traitement réseau sur file asynchrone (Celery/Redis)
