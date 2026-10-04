@@ -125,12 +125,13 @@
     {% set _ = header_rows.append(row) %}
 {% endfor %}
 {% set header_total = header_rows|length %}
+{# Ordre aligné sur le tri des cartes (rank) : risque d'abord, conforme en dernier #}
 {% set coverage = [
-    ('Actif', 'active', 'bg-pass'),
-    ('Non observé', 'unobserved', 'bg-fg-subtle'),
-    ('Non vérifiable', 'unverifiable', 'bg-line-strong'),
     ('Manquant · moyen', 'missing-medium', 'bg-medium'),
-    ('Manquant · faible', 'missing-low', 'bg-low')
+    ('Manquant · faible', 'missing-low', 'bg-low'),
+    ('Non vérifiable', 'unverifiable', 'bg-line-strong'),
+    ('Non observé', 'unobserved', 'bg-fg-subtle'),
+    ('Actif', 'active', 'bg-pass')
 ] %}
 
 {# Cookies : exposé = medium (cohérent avec le comptage du graphe) #}
@@ -426,8 +427,60 @@
 </section>
 {% endif %}
 
+<!-- 3bis. ANALYSE IA + RADAR : synthèse LLM côte à côte, remontée au-dessus des détails -->
+<div class="mt-5 grid gap-5 lg:grid-cols-[1.7fr_1fr]">
+    <section class="panel reveal" style="--i: 3" aria-labelledby="aiTitle">
+        <header class="panel-header">
+            <h2 id="aiTitle" class="panel-title"><i class="fas fa-file-lines" aria-hidden="true"></i> Analyse IA</h2>
+            <span class="text-xs text-fg-muted">Générée par LLM · à vérifier</span>
+        </header>
+        <div class="panel-body grid gap-x-8 gap-y-6 sm:grid-cols-2">
+            <div>
+                <h3 class="label">Résumé exécutif</h3>
+                <p class="mt-2 text-sm leading-6 text-fg">{{ ai.get('executive', '') }}</p>
+            </div>
+
+            <div>
+                <h3 class="label">Points techniques clés</h3>
+                {% set technical = ai.get('technical', '') %}
+                {% if technical is sequence and technical is not string %}
+                    <ul class="mt-2 divide-y divide-line">
+                        {% for point in technical %}
+                            <li class="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                                <span class="mt-2 h-1 w-1 shrink-0 rounded-full bg-accent-fg" aria-hidden="true"></span>
+                                <span class="markdown-text text-dense text-fg-muted">{{ point }}</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">{{ technical }}</pre>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <section class="panel reveal" style="--i: 3" aria-labelledby="radarTitle">
+        <header class="panel-header">
+            <h2 id="radarTitle" class="panel-title">
+                <i class="fas fa-crosshairs" aria-hidden="true"></i> Surface d'attaque
+                <button type="button" class="tip focus-ring rounded text-fg-subtle transition-colors hover:text-accent-fg"
+                        data-tip="Protection estimée par l'IA (0–100) : SSL/MITM interception · Anti-XSS injection de scripts · Clickjack iframes piégées · Sniffing fichiers déguisés · WAF/CDN filtrage périmétrique"
+                        aria-label="Légende : protection estimée par l'IA de 0 à 100 sur 5 axes — SSL/MITM, Anti-XSS, Clickjack, Sniffing, WAF/CDN">
+                    <i class="fas fa-circle-question" aria-hidden="true"></i>
+                </button>
+            </h2>
+            <span class="badge tone-neutral">Estimation IA</span>
+        </header>
+        <div class="panel-body">
+            <div class="relative h-56 w-full">
+                <canvas id="securityRadar" role="img" aria-label="Radar des protections estimées par l'IA, de 0 à 100"></canvas>
+            </div>
+        </div>
+    </section>
+</div>
+
 <!-- 4. MATRICE DES EN-TÊTES : une tuile par en-tête réellement analysé, triée par risque -->
-<section class="panel reveal mt-5" style="--i: 3" aria-labelledby="headersTitle">
+<section class="panel reveal mt-5" style="--i: 4" aria-labelledby="headersTitle">
     <header class="panel-header">
         <h2 id="headersTitle" class="panel-title"><i class="fas fa-shield-alt" aria-hidden="true"></i> En-têtes de sécurité</h2>
         <span class="text-xs tabular-nums text-fg-muted">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span>
@@ -604,55 +657,6 @@
         </div>
     </section>
     {% endif %}
-
-    <section class="panel reveal" style="--i: 9" aria-labelledby="aiTitle">
-        <header class="panel-header">
-            <h2 id="aiTitle" class="panel-title"><i class="fas fa-file-lines" aria-hidden="true"></i> Analyse IA</h2>
-            <span class="text-xs text-fg-muted">Générée par LLM · à vérifier</span>
-        </header>
-        <div class="panel-body space-y-6">
-            <div>
-                <h3 class="label">Résumé exécutif</h3>
-                <p class="mt-2 max-w-prose text-sm leading-6 text-fg">{{ ai.get('executive', '') }}</p>
-            </div>
-
-            <div>
-                <h3 class="label">Points techniques clés</h3>
-                {% set technical = ai.get('technical', '') %}
-                {% if technical is sequence and technical is not string %}
-                    <ul class="mt-2 divide-y divide-line">
-                        {% for point in technical %}
-                            <li class="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
-                                <span class="mt-2 h-1 w-1 shrink-0 rounded-full bg-accent-fg" aria-hidden="true"></span>
-                                <span class="markdown-text text-dense text-fg-muted">{{ point }}</span>
-                            </li>
-                        {% endfor %}
-                    </ul>
-                {% else %}
-                    <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">{{ technical }}</pre>
-                {% endif %}
-            </div>
-        </div>
-    </section>
-
-    <section class="panel reveal" style="--i: 10" aria-labelledby="radarTitle">
-        <header class="panel-header">
-            <h2 id="radarTitle" class="panel-title">
-                <i class="fas fa-crosshairs" aria-hidden="true"></i> Surface d'attaque
-                <button type="button" class="tip focus-ring rounded text-fg-subtle transition-colors hover:text-accent-fg"
-                        data-tip="Protection estimée par l'IA (0–100) : SSL/MITM interception · Anti-XSS injection de scripts · Clickjack iframes piégées · Sniffing fichiers déguisés · WAF/CDN filtrage périmétrique"
-                        aria-label="Légende : protection estimée par l'IA de 0 à 100 sur 5 axes — SSL/MITM, Anti-XSS, Clickjack, Sniffing, WAF/CDN">
-                    <i class="fas fa-circle-question" aria-hidden="true"></i>
-                </button>
-            </h2>
-            <span class="badge tone-neutral">Estimation IA</span>
-        </header>
-        <div class="panel-body">
-            <div class="relative h-56 w-full">
-                <canvas id="securityRadar" role="img" aria-label="Radar des protections estimées par l'IA, de 0 à 100"></canvas>
-            </div>
-        </div>
-    </section>
 
     {% include "components/vulnerability_chart.html" %}
 </div>
