@@ -43,34 +43,66 @@ Compose, rapport LLM via `google-genai`.
 - Pour l'UI : déléguer à l'agent `design-lead` (voir `.claude/agents/design-lead.md`)
   et respecter `secuscope-ui-rules.md`.
 
-## Reprise — état au 03/10/2026
+## Reprise — état au 04/10/2026
 
-**Fait et commité :**
-- DNS profond dans le scanner : SPF, DMARC, DKIM (indice), DNSSEC, CAA, AXFR
-  (`app/services/dns_security.py`, `29838cb`). Clé `dns_security`.
-- IA nourrie des findings DNS (`ai.py`, `8d6502c`). Structure JSON inchangée.
-- TLS approfondi via sslyze : versions, ciphers faibles, forward secrecy
-  (`app/services/tls_analysis.py`, `facab29`). Clé `tls_deep`, budget 30 s.
-  Heartbleed/ROBOT/CCS : informatifs, aucun point.
-- Notes de chantiers (`78c833e`) : recalibrage barème, front DNS/TLS, scan async.
+**Fait et commité le 04/10 :**
+- Scoring v2 (`420c765`) : 4 catégories /100 pondérées (TLS 35, en-têtes 25, DNS 25,
+  cookies 15), bonus infra +5 (max +10), caps (HTTP clair 20, certificat 59, SSLv2/3 79,
+  AXFR 79), ciphers cassés −25 / 3DES legacy −15. « Géré par Infra » supprimé du scanner,
+  `SameSite` extrait des cookies, prompt IA adapté, invariant scoring mis à jour.
+  Clés ajoutées : `score_breakdown` (détail par catégorie + cap), `critical_failure`.
+- Dashboard v2 (`fde3e1c`) : notes par catégorie, bandeau de cap, sections « DNS &
+  messagerie » et « TLS / SSL » (macro `components/check_row.html`), tri par sévérité,
+  bug couleurs Actif/Protégé corrigé, compteurs critique/moyen/faible dérivés de
+  `score_breakdown`, faux « 1 faible » corrigé, modale du barème réécrite, repli
+  « Barème v1 » pour les anciens audits.
+- Test bout en bout Docker : google.com (72, C) et zonetransfer.me (79, C, cappé AXFR),
+  mozilla.org (98, A), ancien audit simulé (rendu sans erreur).
 
-**Pas encore validé :** aucun test bout en bout en conteneur pour DNS/TLS/IA
-(modules testés isolément, sslyze hors Flask). À faire en premier.
+**Fait et commité le 03/10 :**
+- DNS profond (`29838cb`), IA nourrie des findings DNS (`8d6502c`), TLS approfondi
+  sslyze (`facab29`, budget 30 s, Heartbleed/ROBOT/CCS informatifs), notes de chantiers
+  (`78c833e`), spec scoring (`7494fe4`).
+
+**Pas encore validé :** le rapport IA n'a jamais tourné bout en bout avec une vraie
+clé Gemini depuis l'ajout DNS/TLS/scoring v2 (les tests Docker ont utilisé une clé
+factice → rapport en erreur). À faire avec une vraie clé.
+
+**Non commité (état du dépôt) :** `docs/SCORING_V2_SPEC.md` (version à jour, distinction
+cipher cassé/legacy) et `app/templates/index.html` ont des modifications locales.
 
 **TODO rédaction (Maxime, à la main) :** reformuler le périmètre « non intrusif »
 du README (§1 capacités, « Périmètre d'exclusion », §2 dernière puce). La phrase
 « seule composante active = un GET unique » est fausse (AXFR vers les NS, scan
 TLS multi-versions, sonde sslyze). Rédaction sensible, ne pas toucher sans lui.
 
+### TODO issus du scoring v2 / dashboard v2 (découverts le 04/10)
+- **Cap « cipher cassé »** (`scoring.py`) : RC4, DES, EXPORT, NULL, MD5, anonyme → plafond
+  de la note finale (cohérent SSL Labs). Aujourd'hui seulement −25 dans la catégorie TLS,
+  donc un site avec RC4 peut encore viser B. Valeur du plafond à trancher avec Maxime,
+  à ajouter à la spec (§6) puis au dashboard (table des plafonds de la modale).
+- **Kill-switch HTTP** (`scanner.py` / `scoring.py`) : `dns_security` et `tls_deep`
+  absents du kill-switch, donc DNS, TLS et cookies sont notés 100 à tort. La note finale
+  reste correcte (cap 20) mais le détail par catégorie est faux. Soit le scanner
+  renvoie les données DNS/TLS même en kill-switch, soit le scoring marque la catégorie
+  « non évaluée » (le dashboard affiche déjà « note par défaut, non significative »).
+- **Modale du barème** : les plafonds (20/59/79/79) sont recopiés en dur dans
+  `dashboard.html`. À lire du backend (constantes de `scoring.py` exposées dans
+  `score_breakdown`) pour qu'un changement de barème ne désynchronise pas la modale.
+- Compteurs du hero : un cipher cassé est affiché critique dans la table TLS mais compté
+  « moyen » (déduction 25, pas de cap) ; Heartbleed/CCS/ROBOT positifs affichés critiques
+  mais non comptés. À aligner une fois le cap « cipher cassé » décidé.
+- Plafond silencieux : `score_breakdown.cap` n'est rempli que si le plafond est inférieur
+  au score calculé (un AXFR ouvert sur un site à 70 ne produit pas de bandeau). Voulu ;
+  la ligne AXFR reste en évidence dans la section DNS.
+
 ### Ordre de reprise (chantiers restants)
-1. Test bout en bout Docker (`docker compose up --build`) : google.com et
-   `zonetransfer.me` (AXFR ouvert attendu).
-2. Finaliser `docs/SCORING_V2_SPEC.md` (brouillon du 03/10 : affiner les poids, plafond, bonus infra, classification critique).
-3. Appliquer le scoring V2 + fix prompt IA « Géré par Infra » = présent/protégé.
-4. Front DNS/TLS (agent `design-lead`) : sections, tri par sévérité, bug couleurs.
-5. UI `index.html` / `login.html` + restes tâche 4 (liste « Reste à faire » ci-dessous).
-6. Petits points : `.env.example`, `.gitattributes`, Chart.js épinglé, `counts.low`.
-7. Durcissement prod (tâche 3), puis scan asynchrone Celery/Redis, puis tests (tâche 6).
+1. Valider le rapport IA bout en bout avec une vraie clé Gemini.
+2. Cap « cipher cassé » + fix kill-switch (voir TODO ci-dessus), puis modale lue du backend.
+3. UI `index.html` / `login.html` + restes tâche 4 (liste « Reste à faire » ci-dessous).
+4. Petits points : `.env.example`, `.gitattributes`, Chart.js épinglé, textes des grades
+   C et D de la modale à relire (réécrits par `design-lead` le 04/10).
+5. Durcissement prod (tâche 3), puis scan asynchrone Celery/Redis, puis tests (tâche 6).
 
 ## Historique — état au 02/10/2026
 
@@ -95,25 +127,21 @@ README à jour (`007b165`).
 5. **`.gitattributes`** : normaliser les fins de ligne (`* text=auto eol=lf`,
    binaires exclus) — Git avertit « LF will be replaced by CRLF » à chaque commit.
 6. **Points en suspens à trancher avec Maxime :**
-   - Faux finding : `getVulnerabilityCounts` (dashboard) force `counts.low = 1`
-     quand il n'y a aucun finding → le hero affiche « 1 faible » sur un site
-     parfait. Logique d'affichage, ne pas corriger sans accord.
-   - Textes des grades C et D du barème (dialog `#scoreModal`) rédigés par
-     Claude : à relire.
+   - ~~Faux finding `counts.low = 1`~~ : corrigé le 04/10 (`fde3e1c`).
+   - Textes des grades du barème (dialog `#scoreModal`) réécrits le 04/10 par
+     `design-lead` pour le scoring v2 : à relire.
    - Chart.js chargé sans version épinglée (`cdn.jsdelivr.net/npm/chart.js`) :
      épingler une version exacte (même problème que Motion `@latest`).
 
-## Recalibrage du barème (chantier dédié, à faire à froid)
-- PLAFOND : les bonus "géants" masquent les malus. Ex. google.com = 100/100 malgré TLS 1.0/1.1 acceptés + cipher faible, car +10 infra Google +20 "Sécurité gérée par Google" poussent au plafond de 100.
-- Revoir le poids des bonus infra : être hébergé chez Google/Cloudflare ≠ être bien configuré. Ne pas laisser l'hébergeur écraser les vraies faiblesses de config.
-- Aligner la classification critique/moyenne avec la gravité réelle : un AXFR ouvert ou du TLS obsolète devrait pouvoir être "critique" même sans atteindre -50 pts.
-- Fix prompt IA : clarifier que le statut "Géré par Infra" d'un en-tête = présent/protégé, PAS absent (sinon l'IA recommande à tort d'ajouter CSP sur google).
+## Recalibrage du barème — FAIT le 04/10 (`420c765`)
+Plafond des bonus infra (+5, max +10, avant les caps), hébergeur ≠ bien configuré,
+classification critique alignée sur les caps (compteurs du dashboard, `fde3e1c`),
+prompt IA « Géré par Infra » : la notion est supprimée, un en-tête absent est absent.
+Reste : cap « cipher cassé » (voir TODO en haut).
 
-## Front — section Sécurité DNS/TLS (à faire)
-- Trier les findings par sévérité : NÉGATIFS en premier (critiques → moyens → faibles → positifs). Principe : montrer d'abord ce qui demande une action.
-- BUG couleur : tags "Actif" (vert) / "Protégé" (indigo) inversés par rapport à la barre de couverture des en-têtes. Harmoniser : une couleur = un statut partout.
-- Ajouter une vraie section "Sécurité DNS" avec tags visibles (SPF, DMARC, DNSSEC, CAA, AXFR : présent/absent/vulnérable).
-- Ajouter une section "TLS approfondi" (versions, ciphers faibles, forward secrecy).
+## Front — section Sécurité DNS/TLS — FAIT le 04/10 (`fde3e1c`)
+Tri par sévérité, bug couleurs Actif/Protégé, section « DNS & messagerie »,
+section « TLS / SSL » approfondie.
 
 ## Architecture — scan asynchrone (chantier, justifié par sslyze ~30s)
 - Migrer le scan vers Celery + Redis : lancer → job_id → polling du statut → dashboard.
