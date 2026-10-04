@@ -1,0 +1,21 @@
+{#
+  Ligne de contrôle DNS/TLS pour une table .table à 4 colonnes (Contrôle · Résultat · Statut · Impact).
+  tone   : critical | high | medium | low (risque) · pass (conforme) · info (télémétrie non notée) · neutral (inconnu)
+  impact : points déduits (int > 0) lus dans score_breakdown, ou none si le contrôle ne note rien.
+  Tout est auto-échappé : aucune donnée du scan n'est marquée |safe.
+#}
+{% macro check_row(name, tone, label, detail='', impact=none) -%}
+{%- set is_risk = tone in ['critical', 'high', 'medium', 'low'] -%}
+<tr>
+    <td class="data whitespace-nowrap {{ 'sev-' ~ tone if is_risk }}">{{ name }}</td>
+    <td class="text-xs text-fg-muted break-words">{{ detail }}</td>
+    <td class="text-right"><span class="badge tone-{{ tone }}">{{ label }}</span></td>
+    <td class="num text-xs whitespace-nowrap">
+        {%- if impact is number and impact > 0 -%}
+            <span class="{{ 'text-' ~ tone ~ '-fg' if is_risk else 'text-fg-muted' }}">-{{ impact }} pts</span>
+        {%- else -%}
+            <span class="text-fg-subtle" aria-hidden="true">—</span><span class="sr-only">aucun impact sur la note</span>
+        {%- endif -%}
+    </td>
+</tr>
+{%- endmacro %}

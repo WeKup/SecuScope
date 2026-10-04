@@ -6,49 +6,138 @@
 {% endblock %}
 
 {% block content %}
-{# --- Données d'affichage : tonalités dérivées des seuils de scoring.py (A ≥ 90, B ≥ 80, C ≥ 60, D ≥ 40, F) --- #}
-{% set scan = audit.scan_data %}
+{% from "components/check_row.html" import check_row %}
+{# ============================================================================
+   DONNÉES D'AFFICHAGE — lecture seule de scan_data, toujours via .get :
+   les anciens audits n'ont ni score_breakdown, ni dns_security, ni tls_deep.
+   ============================================================================ #}
+{% set scan = audit.scan_data if audit.scan_data is mapping else {} %}
 {% set score = scan.get('numeric_score', audit.numeric_score)|int %}
 {% set grade = audit.score or '?' %}
-{# A/B = bon score : indigo (chrome). C/D/F = sévérité, parce que c'est un niveau de risque #}
-{% set tone = {'A': 'info', 'B': 'info', 'C': 'medium', 'D': 'high', 'F': 'critical'}.get(grade, 'neutral') %}
-{% set fill = {'info': 'bg-accent-fg', 'medium': 'bg-medium', 'high': 'bg-high', 'critical': 'bg-critical'}.get(tone, 'bg-fg-subtle') %}
-{% set score_color = 'text-accent-fg' if tone == 'info' else 'text-fg' %}
+{# Grade = niveau de risque : A/B conforme (pass), puis sévérités. L'indigo reste la chrome. #}
+{% set grade_tones = {'A': 'pass', 'B': 'pass', 'C': 'medium', 'D': 'high', 'F': 'critical'} %}
+{% set tone = grade_tones.get(grade, 'neutral') %}
+{% set fill = {'pass': 'bg-pass', 'medium': 'bg-medium', 'high': 'bg-high', 'critical': 'bg-critical'}.get(tone, 'bg-fg-subtle') %}
+{% set score_color = 'text-pass-fg' if tone == 'pass' else 'text-fg' %}
 {% set grade_ranges = {'A': '≥ 90', 'B': '80–89', 'C': '60–79', 'D': '40–59', 'F': '< 40'} %}
+{# Table statut -> token : ordre de tri des lignes, risque d'abord #}
+{% set tone_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'neutral': 4, 'info': 5, 'pass': 6} %}
 
-{# Impact réel de chaque critère, lu dans score_details ("+5 pts: Strict-Transport-Security") #}
+{% set ssl = scan.get('ssl') if scan.get('ssl') is mapping else {} %}
+{% set dns_sec = scan.get('dns_security') if scan.get('dns_security') is mapping else {} %}
+{% set tls_deep = scan.get('tls_deep') if scan.get('tls_deep') is mapping else {} %}
+{% set tls_ok = tls_deep.get('status') == 'ok' %}
+{% set protocols = tls_deep.get('protocols') if tls_deep.get('protocols') is mapping else {} %}
+{% set axfr = dns_sec.get('axfr') if dns_sec.get('axfr') is mapping else {} %}
+{% set crit_failure = scan.get('critical_failure') is sameas true %}
+
+{# --- Barème v2 : score_breakdown (absent des audits antérieurs à la refonte) --- #}
+{% set breakdown = scan.get('score_breakdown') %}
+{% set has_v2 = breakdown is mapping and breakdown.get('categories') is mapping %}
+{% set ns = namespace(weighted=0, critical=0, medium=0, low=0, cipher=none) %}
+{% set cat_rows = [] %}
+{% set cat_by_key = {} %}
+{% set ded_by_cat = {} %}
+{# Déductions déjà comptées comme CRITIQUES (faille plafonnante) : exclues du comptage moyen/faible #}
+{% set cap_labels = ['Certificat invalide, expiré ou ne correspond pas au domaine', 'SSLv2/SSLv3 accepté', 'Transfert de zone AXFR ouvert'] %}
+{% if has_v2 %}
+    {% for key, cat in breakdown['categories'].items() if cat is mapping %}
+        {% set deds = [] %}
+        {% set lookup = {} %}
+        {% for d in (cat.get('deductions') or []) if d is mapping %}
+            {% set pts = d.get('points')|int %}
+            {% set lbl = d.get('label')|string %}
+            {% set dsev = 'critical' if lbl in cap_labels else ('medium' if pts >= 12 else 'low') %}
+            {% set _ = deds.append({'points': pts, 'label': lbl, 'sev': dsev}) %}
+            {% set _ = lookup.update({lbl: pts}) %}
+            {% if dsev == 'medium' %}{% set ns.medium = ns.medium + 1 %}
+            {% elif dsev == 'low' and pts > 0 %}{% set ns.low = ns.low + 1 %}{% endif %}
+        {% endfor %}
+        {% set cscore = cat.get('score')|int %}
+        {% set cweight = cat.get('weight')|int %}
+        {% set ns.weighted = ns.weighted + cscore * cweight / 100 %}
+        {% set ctone = 'pass' if cscore >= 80 else ('medium' if cscore >= 60 else ('high' if cscore >= 40 else 'critical')) %}
+        {% set crow = {'key': key, 'label': cat.get('label') or key, 'weight': cweight, 'score': cscore, 'tone': ctone,
+                       'deductions': deds|sort(attribute='points', reverse=true)} %}
+        {% set _ = cat_rows.append(crow) %}
+        {% set _ = cat_by_key.update({key: crow}) %}
+        {% set _ = ded_by_cat.update({key: lookup}) %}
+    {% endfor %}
+{% endif %}
+{% set infra_bonus = breakdown.get('infra_bonus')|int if has_v2 else 0 %}
+{% set raw_score = breakdown.get('raw_score', score)|int if has_v2 else score %}
+{% set cap = breakdown.get('cap') if has_v2 and breakdown.get('cap') is mapping else none %}
+{% set cap_reasons = (cap.get('reasons') or []) if cap else [] %}
+{% set cap_reasons = [cap_reasons] if cap_reasons is string else cap_reasons %}
+{% set tls_ded = ded_by_cat.get('tls', {}) %}
+{% set dns_ded = ded_by_cat.get('dns', {}) %}
+
+{# --- Failles CRITIQUES = failles plafonnantes, détectées dans les données :
+       breakdown.cap n'est rempli que si le plafond < score calculé, on ne s'y fie donc pas seul. --- #}
+{% set critical_findings = [] %}
+{% if crit_failure %}
+    {% set _ = critical_findings.append({'key': 'http', 'label': 'HTTP en clair / HTTPS non forcé'}) %}
+{% elif not ssl.get('valid') %}
+    {% set _ = critical_findings.append({'key': 'cert', 'label': 'Certificat TLS invalide'}) %}
+{% endif %}
+{% if tls_ok and (protocols.get('SSLv2') or protocols.get('SSLv3')) %}
+    {% set _ = critical_findings.append({'key': 'sslv', 'label': 'SSLv2/SSLv3 accepté'}) %}
+{% endif %}
+{% if axfr.get('status') == 'vulnerable' %}
+    {% set _ = critical_findings.append({'key': 'axfr', 'label': 'Transfert de zone AXFR ouvert'}) %}
+{% endif %}
+{% set critical_keys = critical_findings|map(attribute='key')|list %}
+{% set v2_counts = {'critical': critical_findings|length, 'medium': ns.medium, 'low': ns.low} if has_v2 else none %}
+
+{# Impact réel par critère, lu dans score_details ("-25 pts: CSP"). Les lignes de synthèse
+   v2 ("Note X: …", "Plafond appliqué: …") ne commencent pas par +N/-N : filtrées ici. #}
 {% set impacts = {} %}
-{% for d in scan['score_details'] if ':' in d %}
-    {% set _ = impacts.update({(d.split(':', 1)[1])|trim: d.split(' ')[0]}) %}
+{% for d in (scan.get('score_details') or []) if d is string and ':' in d %}
+    {% set head = d.split(' ', 1)[0] %}
+    {% if head[:1] in ('+', '-') and head[1:].isdigit() %}
+        {% set _ = impacts.update({(d.split(':', 1)[1])|trim: head|int}) %}
+    {% endif %}
 {% endfor %}
 
-{# En-têtes : risque d'abord (Manquant), puis inconnu, protégé, actif #}
+{# En-têtes : risque d'abord (manquant moyen, manquant faible), puis non observé, non vérifiable, actif.
+   v2 : un en-tête manquant prend la sévérité de sa déduction (≥ 12 = moyen). v1 : faible. #}
+{% set headers_map = scan.get('headers') if scan.get('headers') is mapping else {} %}
 {% set header_rows = [] %}
-{% for h, status in scan['headers'].items() %}
-    {% if 'Présent' in status or 'ACTIF' in status %}
-        {% set row = {'label': 'Actif', 'tone': 'pass', 'rank': 3} %}
-    {% elif 'Masqué' in status or 'WAF' in status or 'Protégé' in status or 'Géré' in status %}
-        {% set row = {'label': 'Protégé', 'tone': 'info', 'rank': 2} %}
-    {% elif 'Non vérifiable' in status or 'BLOQUÉ' in status %}
-        {% set row = {'label': 'Non vérifiable', 'tone': 'neutral', 'rank': 1} %}
+{% for h, raw_status in headers_map.items() %}
+    {% set st = raw_status|string %}
+    {% set imp = impacts.get(h) %}
+    {% if 'Présent' in st or 'ACTIF' in st %}
+        {% set row = {'label': 'Actif', 'tone': 'pass', 'group': 'active', 'rank': 4} %}
+    {% elif 'Masqué' in st or 'WAF' in st or 'Protégé' in st or 'Géré' in st %}
+        {% set row = {'label': 'Non observé' if has_v2 else 'Non observé (v1)', 'tone': 'neutral', 'group': 'unobserved', 'rank': 2} %}
+    {% elif 'Non vérifiable' in st or 'BLOQUÉ' in st %}
+        {% set row = {'label': 'Non vérifiable', 'tone': 'neutral', 'group': 'unverifiable', 'rank': 3} %}
+    {% elif has_v2 and imp is number and imp <= -12 %}
+        {% set row = {'label': 'Manquant', 'tone': 'medium', 'group': 'missing-medium', 'rank': 0} %}
     {% else %}
-        {% set row = {'label': 'Manquant', 'tone': 'low', 'rank': 0} %}
+        {% set row = {'label': 'Manquant', 'tone': 'low', 'group': 'missing-low', 'rank': 1} %}
     {% endif %}
-    {% set _ = row.update({'name': h, 'raw': status|replace('✅', '')|replace('❌', '')|replace('🛡️', '')|replace('🛡', '')|trim, 'impact': impacts.get(h)}) %}
+    {% set itone = none %}
+    {% if imp is number and imp > 0 %}{% set itone = 'pass' %}
+    {% elif imp is number and imp < 0 %}{% set itone = row.tone if row.group.startswith('missing') else ('medium' if imp <= -12 else 'low') %}{% endif %}
+    {% set _ = row.update({'name': h, 'raw': st|replace('✅', '')|replace('❌', '')|replace('🛡️', '')|replace('🛡', '')|trim,
+                           'impact': imp if itone else none, 'itone': itone}) %}
     {% set _ = header_rows.append(row) %}
 {% endfor %}
 {% set header_total = header_rows|length %}
 {% set coverage = [
-    ('Actif', 'pass', 'bg-pass'),
-    ('Protégé', 'info', 'bg-info'),
-    ('Non vérifiable', 'neutral', 'bg-line-strong'),
-    ('Manquant', 'low', 'bg-low')
+    ('Actif', 'active', 'bg-pass'),
+    ('Non observé', 'unobserved', 'bg-fg-subtle'),
+    ('Non vérifiable', 'unverifiable', 'bg-line-strong'),
+    ('Manquant · moyen', 'missing-medium', 'bg-medium'),
+    ('Manquant · faible', 'missing-low', 'bg-low')
 ] %}
 
 {# Cookies : exposé = medium (cohérent avec le comptage du graphe) #}
 {% set cookie_rows = [] %}
 {% set cookie_notes = [] %}
-{% for cookie in scan['cookies_security'] %}
+{% for cookie_raw in (scan.get('cookies_security') or []) %}
+    {% set cookie = cookie_raw|string %}
     {% if ': ' in cookie %}
         {% set parts = cookie.split(': ', 1) %}
         {% set secure = '✅' in parts[1] %}
@@ -58,9 +147,133 @@
     {% endif %}
 {% endfor %}
 
-{% set ssl = scan['ssl'] %}
-{% set waf = scan['waf_detected'] %}
+{% set waf = (scan.get('waf_detected') or 'Non détecté')|string %}
 {% set waf_found = 'Non détecté' not in waf %}
+
+{# --- TLS : une ligne par déduction possible du barème, triée par risque --- #}
+{% set tls_raw = [] %}
+{% if crit_failure %}
+    {% set _ = tls_raw.append(('Certificat', 'critical', 'Échec', 'Connexion HTTPS impossible ou non forcée', none)) %}
+{% elif ssl.get('valid') %}
+    {% set _ = tls_raw.append(('Certificat', 'pass', 'Valide', ssl.get('issuer') or '', none)) %}
+{% else %}
+    {% set _ = tls_raw.append(('Certificat', 'critical', 'Invalide', 'Expiré, auto-signé ou nom non concordant', tls_ded.get(cap_labels[0]))) %}
+{% endif %}
+{% if tls_ok %}
+    {% set pstate = {true: 'accepté', false: 'refusé'} %}
+    {% set p2, p3 = protocols.get('SSLv2'), protocols.get('SSLv3') %}
+    {% set legacy_detail = 'SSLv2 ' ~ pstate.get(p2, 'indéterminé') ~ ' · SSLv3 ' ~ pstate.get(p3, 'indéterminé') %}
+    {% if p2 or p3 %}{% set _ = tls_raw.append(('SSLv2 / SSLv3', 'critical', 'Accepté', legacy_detail, tls_ded.get(cap_labels[1]))) %}
+    {% elif p2 is sameas false and p3 is sameas false %}{% set _ = tls_raw.append(('SSLv2 / SSLv3', 'pass', 'Refusé', legacy_detail, none)) %}
+    {% else %}{% set _ = tls_raw.append(('SSLv2 / SSLv3', 'neutral', 'Indéterminé', legacy_detail, none)) %}{% endif %}
+
+    {% set p10, p11 = protocols.get('TLSv1.0'), protocols.get('TLSv1.1') %}
+    {% set old_detail = 'TLS 1.0 ' ~ pstate.get(p10, 'indéterminé') ~ ' · TLS 1.1 ' ~ pstate.get(p11, 'indéterminé') %}
+    {% if p10 or p11 %}{% set _ = tls_raw.append(('TLS 1.0 / 1.1', 'medium', 'Accepté', old_detail, tls_ded.get('TLS 1.0/1.1 accepté'))) %}
+    {% elif p10 is sameas false and p11 is sameas false %}{% set _ = tls_raw.append(('TLS 1.0 / 1.1', 'pass', 'Refusé', old_detail, none)) %}
+    {% else %}{% set _ = tls_raw.append(('TLS 1.0 / 1.1', 'neutral', 'Indéterminé', old_detail, none)) %}{% endif %}
+
+    {% set p12 = protocols.get('TLSv1.2') %}
+    {% if p12 %}{% set _ = tls_raw.append(('TLS 1.2', 'pass', 'Supporté', '', none)) %}
+    {% elif p12 is sameas false %}{% set _ = tls_raw.append(('TLS 1.2', 'neutral', 'Non supporté', 'Non noté', none)) %}
+    {% else %}{% set _ = tls_raw.append(('TLS 1.2', 'neutral', 'Indéterminé', '', none)) %}{% endif %}
+
+    {% set p13 = protocols.get('TLSv1.3') %}
+    {% if p13 %}{% set _ = tls_raw.append(('TLS 1.3', 'pass', 'Supporté', '', none)) %}
+    {% elif p13 is sameas false %}{% set _ = tls_raw.append(('TLS 1.3', 'low', 'Non supporté', 'Version moderne absente', tls_ded.get('TLS 1.3 non supporté'))) %}
+    {% else %}{% set _ = tls_raw.append(('TLS 1.3', 'neutral', 'Indéterminé', '', none)) %}{% endif %}
+
+    {# '3DES' = legacy (Sweet32, moyen) ; toute autre suite faible = cassée (critique) #}
+    {% set weak = tls_deep.get('weak_ciphers') or [] %}
+    {% set weak = [weak] if weak is string else weak %}
+    {% set broken = weak|reject('equalto', '3DES')|list %}
+    {% for lbl, pts in tls_ded.items() if lbl.startswith('Cipher suite') %}{% set ns.cipher = pts %}{% endfor %}
+    {% if broken %}{% set _ = tls_raw.append(('Ciphers faibles', 'critical', 'Cassé', broken|join(', ') ~ (' · 3DES legacy' if '3DES' in weak else ''), ns.cipher)) %}
+    {% elif weak %}{% set _ = tls_raw.append(('Ciphers faibles', 'medium', 'Legacy', '3DES (Sweet32)', ns.cipher)) %}
+    {% else %}{% set _ = tls_raw.append(('Ciphers faibles', 'pass', 'Aucun', 'Ni RC4, DES, 3DES, EXPORT, NULL, MD5 ni anonyme', none)) %}{% endif %}
+
+    {% set fs = tls_deep.get('forward_secrecy') %}
+    {% if fs %}{% set _ = tls_raw.append(('Forward secrecy', 'pass', 'Active', 'ECDHE/DHE ou TLS 1.3', none)) %}
+    {% elif fs is sameas false %}{% set _ = tls_raw.append(('Forward secrecy', 'medium', 'Absente', 'Aucune suite ECDHE/DHE acceptée', tls_ded.get('Forward secrecy absente'))) %}
+    {% else %}{% set _ = tls_raw.append(('Forward secrecy', 'neutral', 'Indéterminé', '', none)) %}{% endif %}
+
+    {# Vulnérabilités connues : informatives (non notées) mais une faille avérée reste critique #}
+    {% set vulns = tls_deep.get('vulnerabilities') if tls_deep.get('vulnerabilities') is mapping else {} %}
+    {% set vuln_names = [('Heartbleed', 'heartbleed'), ('CCS injection', 'ccs_injection'), ('ROBOT', 'robot')] %}
+    {% set vuln_hit, vuln_unknown = [], [] %}
+    {% for vname, vkey in vuln_names %}
+        {% if vulns.get(vkey) %}{% set _ = vuln_hit.append(vname) %}
+        {% elif vulns.get(vkey) is not sameas false %}{% set _ = vuln_unknown.append(vname) %}{% endif %}
+    {% endfor %}
+    {% if vuln_hit %}{% set _ = tls_raw.append(('Vulnérabilités', 'critical', 'Vulnérable', vuln_hit|join(', ') ~ ' · informatif, non noté', none)) %}
+    {% elif vuln_unknown %}{% set _ = tls_raw.append(('Vulnérabilités', 'neutral', 'Indéterminé', vuln_unknown|join(', ') ~ ' non conclusif', none)) %}
+    {% else %}{% set _ = tls_raw.append(('Vulnérabilités', 'pass', 'Aucune', 'Heartbleed · CCS injection · ROBOT', none)) %}{% endif %}
+{% endif %}
+{% set tls_unavailable = {
+    'unreachable': ('Injoignable', 'sslyze n’a pas pu joindre le port 443'),
+    'skipped': ('Ignorée', 'Aucune IP publique résolue pour le domaine'),
+    'error': ('Erreur', 'Analyse sslyze en échec')
+} %}
+{% if not tls_ok %}
+    {% if tls_deep.get('status')|string in tls_unavailable %}
+        {% set u = tls_unavailable[tls_deep.get('status')|string] %}
+        {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', u[0], u[1], none)) %}
+    {% elif crit_failure %}
+        {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', 'Non exécutée', 'Scan interrompu : HTTPS non forcé', none)) %}
+    {% else %}
+        {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', 'Non vérifié', 'Audit antérieur à l’analyse TLS approfondie', none)) %}
+    {% endif %}
+{% endif %}
+{% set tls_rows = [] %}
+{% for n, t, l, d, i in tls_raw %}{% set _ = tls_rows.append({'name': n, 'tone': t, 'label': l, 'detail': d, 'impact': i, 'rank': tone_rank.get(t, 9)}) %}{% endfor %}
+
+{# --- DNS : table statut -> token, alignée sur les déductions de scoring.py --- #}
+{% set dns_raw = [] %}
+{% set dns_unknown = {'error': ('neutral', 'Erreur', 'Requête DNS en échec')} %}
+{% set dns_default = ('neutral', 'Non vérifié', 'Contrôle absent de cet audit') %}
+{% if dns_sec %}
+    {% for key, name in [('axfr', 'AXFR'), ('spf', 'SPF'), ('dmarc', 'DMARC'), ('dnssec', 'DNSSEC'), ('caa', 'CAA'), ('dkim', 'DKIM')] %}
+        {% set c = dns_sec.get(key) if dns_sec.get(key) is mapping else {} %}
+        {% set st = c.get('status') %}
+        {% set u = dns_unknown.get(st|string, dns_default) %}
+        {% if key == 'spf' %}
+            {% if st == 'absent' %}{% set _ = dns_raw.append((name, 'medium', 'Absent', 'Aucun enregistrement v=spf1', dns_ded.get('SPF absent'))) %}
+            {% elif st == 'present' and c.get('termination') == '+all' %}{% set _ = dns_raw.append((name, 'medium', 'Permissif', '+all : tout expéditeur autorisé', dns_ded.get('SPF permissif (+all)'))) %}
+            {% elif st == 'present' %}{% set _ = dns_raw.append((name, 'pass', 'Présent', 'Terminaison ' ~ (c.get('termination') or 'none'), none)) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% elif key == 'dmarc' %}
+            {% if st == 'absent' %}{% set _ = dns_raw.append((name, 'medium', 'Absent', 'Aucun enregistrement _dmarc', dns_ded.get('DMARC absent'))) %}
+            {% elif st == 'present' and c.get('policy') == 'none' %}{% set _ = dns_raw.append((name, 'medium', 'p=none', 'Surveillance seule, aucun rejet', dns_ded.get('DMARC en p=none (surveillance seule)'))) %}
+            {% elif st == 'present' %}{% set _ = dns_raw.append((name, 'pass', 'Présent', ('p=' ~ c.get('policy')) if c.get('policy') else 'Politique p= non lue', none)) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% elif key == 'dkim' %}
+            {# Informatif : non noté, sélecteurs courants seulement → télémétrie (indigo) ou inconnu #}
+            {% set tested = (c.get('selectors_tested') or [])|length %}
+            {% if st == 'present' %}{% set _ = dns_raw.append((name, 'info', 'Trouvé', (c.get('selectors_found') or [])|join(', ') ~ ' · informatif', none)) %}
+            {% elif st == 'not_found' %}{% set _ = dns_raw.append((name, 'neutral', 'Non trouvé', tested ~ ' sélecteurs courants testés, non exhaustif', none)) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% elif key == 'dnssec' %}
+            {% if st == 'present' %}{% set _ = dns_raw.append((name, 'pass', 'Actif', 'DNSKEY/DS publiés', none)) %}
+            {% elif st == 'absent' %}{% set _ = dns_raw.append((name, 'medium', 'Absent', 'Réponses DNS non signées', dns_ded.get('DNSSEC absent'))) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% elif key == 'caa' %}
+            {% if st == 'present' %}{% set _ = dns_raw.append((name, 'pass', 'Présent', (c.get('authorities') or [])|join(', '), none)) %}
+            {% elif st == 'absent' %}{% set _ = dns_raw.append((name, 'low', 'Absent', 'Toute AC peut émettre un certificat', dns_ded.get('CAA absent'))) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% elif key == 'axfr' %}
+            {% set ns_tested = (c.get('nameservers_tested') or [])|length %}
+            {% if st == 'vulnerable' %}{% set _ = dns_raw.append((name, 'critical', 'Ouvert', 'Zone transférable via ' ~ (c.get('vulnerable_nameservers') or [])|join(', '), dns_ded.get(cap_labels[2]))) %}
+            {% elif st == 'refused' and ns_tested %}{% set _ = dns_raw.append((name, 'pass', 'Refusé', 'Refusé par ' ~ ns_tested ~ ' serveur(s) de noms', none)) %}
+            {% elif st == 'refused' %}{% set _ = dns_raw.append((name, 'neutral', 'Non testé', 'Aucun serveur de noms public résolu', none)) %}
+            {% else %}{% set _ = dns_raw.append((name, u[0], u[1], u[2], none)) %}{% endif %}
+        {% endif %}
+    {% endfor %}
+{% endif %}
+{% set dns_rows = [] %}
+{% for n, t, l, d, i in dns_raw %}{% set _ = dns_rows.append({'name': n, 'tone': t, 'label': l, 'detail': d, 'impact': i, 'rank': tone_rank.get(t, 9)}) %}{% endfor %}
+
+{% set ai = audit.ai_report if audit.ai_report is mapping else {} %}
+{% set cap_gap = (raw_score - score) if cap and raw_score > score else 0 %}
 
 <!-- 1. HERO : score + grade + contexte (2 zones auto-fit, séparateur = gap 1px sur fond line) -->
 <section class="panel reveal overflow-hidden" style="--i: 0" aria-labelledby="auditDomain">
@@ -69,7 +282,8 @@
         <div class="bg-surface p-6 lg:p-8">
             <div class="flex items-center justify-between gap-3">
                 <span class="label">Score de confiance</span>
-                <button type="button" class="btn btn-sm btn-ghost -mr-2 hover:text-accent-fg" onclick="document.getElementById('scoreModal').showModal()">
+                <button type="button" class="btn btn-sm btn-ghost -mr-2 hover:text-accent-fg" aria-haspopup="dialog" aria-controls="scoreModal"
+                        onclick="document.getElementById('scoreModal').showModal()">
                     <i class="fas fa-circle-info" aria-hidden="true"></i> Barème
                 </button>
             </div>
@@ -79,15 +293,19 @@
                     <span id="scoreValue" data-score="{{ score }}" aria-hidden="true"
                           class="text-hero-sm lg:text-hero font-semibold tracking-[-0.03em] tabular-nums {{ score_color }}">{{ score }}</span>
                     <span class="text-sm font-medium text-fg-muted" aria-hidden="true">/100</span>
-                    <span class="sr-only">Score {{ score }} sur 100, grade {{ grade }}</span>
+                    <span class="sr-only">Score {{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné (score calculé {{ raw_score }}){% endif %}</span>
                 </p>
                 <div class="grade tone-{{ tone }} grade-settle" aria-hidden="true">{{ grade }}</div>
             </div>
 
             <div class="mt-6">
                 <div class="meter" role="meter" aria-label="Score de confiance" aria-valuemin="0" aria-valuemax="100"
-                     aria-valuenow="{{ score }}" aria-valuetext="{{ score }} sur 100, grade {{ grade }}">
+                     aria-valuenow="{{ score }}" aria-valuetext="{{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné depuis {{ raw_score }}{% endif %}">
                     <div class="meter-fill {{ fill }}" style="--score: {{ score }}"></div>
+                    {% if cap_gap %}
+                    {# Points perdus par le plafond : segment teinté entre score final et score calculé #}
+                    <span class="absolute inset-y-0 bg-critical/25" style="left: {{ score }}%; width: {{ cap_gap }}%"></span>
+                    {% endif %}
                     <span class="meter-tick left-[40%]"></span>
                     <span class="meter-tick left-[60%]"></span>
                     <span class="meter-tick left-[80%]"></span>
@@ -103,7 +321,9 @@
             </div>
 
             <p class="mt-4 text-xs text-fg-muted">
-                Grade {{ grade }}{% if grade in grade_ranges %} · seuil {{ grade_ranges[grade] }}{% endif %} · base 50, bornée 0–100
+                Grade {{ grade }}{% if grade in grade_ranges %} · seuil {{ grade_ranges[grade] }}{% endif %}
+                {%- if has_v2 %} · moyenne pondérée de {{ cat_rows|length }} catégories{% if infra_bonus %} + bonus infra{% endif %}{% if cap_gap %} · <span class="text-critical-fg">plafonné</span>{% endif %}
+                {%- else %} · barème v1, base 50, bornée 0–100{% endif %}
             </p>
         </div>
 
@@ -112,82 +332,188 @@
                 <span class="label">Cible auditée</span>
                 <h1 id="auditDomain" class="mt-1.5 font-mono text-lg font-medium text-fg break-all">{{ audit.domain }}</h1>
                 <dl class="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 font-mono text-xs">
-                    <div class="flex gap-1.5"><dt class="text-fg-muted">IP</dt><dd class="text-fg">{{ scan['ip'] }}</dd></div>
-                    <div class="flex gap-1.5"><dt class="text-fg-muted">Serveur</dt><dd class="text-fg">{{ scan['server'] }}</dd></div>
+                    <div class="flex gap-1.5"><dt class="text-fg-muted">IP</dt><dd class="text-fg">{{ scan.get('ip', '—') }}</dd></div>
+                    <div class="flex gap-1.5"><dt class="text-fg-muted">Serveur</dt><dd class="text-fg">{{ scan.get('server', '—') }}</dd></div>
                     {% if audit.timestamp %}
                     <div class="flex gap-1.5"><dt class="text-fg-muted">Analysé</dt><dd class="text-fg">{{ audit.timestamp.strftime('%d/%m/%Y %H:%M') }} UTC</dd></div>
                     {% endif %}
                 </dl>
-                {% if scan['tech_stack'] %}
-                <p class="mt-1 font-mono text-xs text-fg-muted">Stack · <span class="text-fg">{{ scan['tech_stack']|join(', ') }}</span></p>
+                {% if scan.get('tech_stack') %}
+                <p class="mt-1 font-mono text-xs text-fg-muted">Stack · <span class="text-fg">{{ scan.get('tech_stack')|join(', ') }}</span></p>
                 {% endif %}
             </div>
 
             <div class="mt-auto grid grid-cols-3 divide-x divide-line border-t border-line pt-5">
-                <div class="vulnerability-metric pr-4">
-                    <div class="label">Critiques</div>
-                    <div id="criticalCount" data-tone="text-critical-fg" class="mt-2 text-2xl leading-none font-semibold tabular-nums text-critical-fg">–</div>
+                {% for cid, clabel, ctone, ckey in [('criticalCount', 'Critiques', 'critical', 'critical'), ('mediumCount', 'Moyennes', 'medium', 'medium'), ('lowCount', 'Faibles', 'low', 'low')] %}
+                {% set n = v2_counts[ckey] if v2_counts else none %}
+                <div class="vulnerability-metric {{ 'pr-4' if loop.first else ('pl-4' if loop.last else 'px-4') }}">
+                    <div class="label">{{ clabel }}</div>
+                    <div id="{{ cid }}" data-tone="text-{{ ctone }}-fg"
+                         class="mt-2 text-2xl leading-none font-semibold tabular-nums {{ 'text-fg-muted' if n == 0 else 'text-' ~ ctone ~ '-fg' }}">{{ n if n is not none else '–' }}</div>
                 </div>
-                <div class="vulnerability-metric px-4">
-                    <div class="label">Moyennes</div>
-                    <div id="mediumCount" data-tone="text-medium-fg" class="mt-2 text-2xl leading-none font-semibold tabular-nums text-medium-fg">–</div>
-                </div>
-                <div class="vulnerability-metric pl-4">
-                    <div class="label">Faibles</div>
-                    <div id="lowCount" data-tone="text-low-fg" class="mt-2 text-2xl leading-none font-semibold tabular-nums text-low-fg">–</div>
-                </div>
+                {% endfor %}
             </div>
         </div>
     </div>
 </section>
 
-<!-- 2. MATRICE DES EN-TÊTES : une tuile par en-tête réellement analysé, triée par risque -->
-<section class="panel reveal mt-5" style="--i: 1" aria-labelledby="headersTitle">
+{# 2. FAILLES CRITIQUES / PLAFOND : juste sous le score, c'est ce qui l'explique #}
+{% if cap_gap or critical_findings %}
+<div class="reveal mt-3 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm tone-critical" style="--i: 1">
+    <i class="fas fa-triangle-exclamation mt-0.5" aria-hidden="true"></i>
+    <div class="min-w-0 text-fg">
+        {% if cap_gap %}
+        <p class="font-medium">Note plafonnée à {{ cap.get('grade', '?') }} ({{ cap.get('max', score) }}/100) : {{ cap_reasons|join(' ; ') }}.</p>
+        <p class="mt-0.5 text-xs text-fg-muted">Score calculé avant plafond : <span class="font-mono tabular-nums text-fg">{{ raw_score }}/100</span>. Une faille grave ne se compense pas par les autres catégories.</p>
+        {% else %}
+        <p class="font-medium">Faille{{ 's' if critical_findings|length > 1 }} critique{{ 's' if critical_findings|length > 1 }} : {{ critical_findings|map(attribute='label')|join(' ; ') }}.</p>
+        {% if has_v2 %}<p class="mt-0.5 text-xs text-fg-muted">Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.</p>{% endif %}
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if has_v2 and cat_rows %}
+<!-- 3. NOTES PAR CATÉGORIE : triées de la plus faible à la plus haute -->
+<section class="panel reveal mt-5 overflow-hidden" style="--i: 2" aria-labelledby="categoriesTitle">
+    <header class="panel-header">
+        <h2 id="categoriesTitle" class="panel-title"><i class="fas fa-layer-group" aria-hidden="true"></i> Notes par catégorie</h2>
+        <span class="text-xs text-fg-muted">Plus faible d'abord</span>
+    </header>
+    <ul class="grid gap-px bg-line" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));">
+        {% for c in cat_rows|sort(attribute='score') %}
+        <li class="flex flex-col gap-3 bg-surface p-5">
+            <div class="flex items-baseline justify-between gap-2">
+                <h3 class="text-xs font-medium text-fg">{{ c.label }}</h3>
+                <span class="font-mono text-2xs tabular-nums text-fg-subtle">poids {{ c.weight }} %</span>
+            </div>
+            <p class="flex items-baseline gap-1">
+                <span class="text-2xl font-semibold leading-none tabular-nums text-{{ c.tone }}-fg">{{ c.score }}</span>
+                <span class="text-xs text-fg-muted"><span aria-hidden="true">/100</span><span class="sr-only">sur 100</span></span>
+            </p>
+            <div class="meter h-1.5" aria-hidden="true"><div class="meter-fill bg-{{ c.tone }}" style="--score: {{ c.score }}"></div></div>
+            {% if c.deductions %}
+            <ul class="divide-y divide-line text-xs">
+                {% for d in c.deductions %}
+                <li class="flex items-baseline justify-between gap-3 py-1.5 first:pt-0 last:pb-0">
+                    <span class="min-w-0 text-fg-muted">{{ d.label }}</span>
+                    <span class="shrink-0 font-mono tabular-nums text-{{ d.sev }}-fg">-{{ d.points }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="text-xs text-fg-subtle">Aucune déduction.</p>
+            {% endif %}
+            {% if c.key == 'dns' and not dns_sec %}
+            <p class="mt-auto text-2xs text-fg-subtle">Contrôles DNS non exécutés : note par défaut, non significative.</p>
+            {% elif c.key == 'tls' and not tls_ok %}
+            <p class="mt-auto text-2xs text-fg-subtle">Analyse approfondie indisponible : seul le certificat est noté.</p>
+            {% elif c.key == 'cookies' and not cookie_rows %}
+            <p class="mt-auto text-2xs text-fg-subtle">Aucun cookie posé : rien à risque.</p>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <dl class="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-line px-5 py-3 font-mono text-xs tabular-nums">
+        <div class="flex gap-1.5"><dt class="text-fg-muted">Σ note × poids</dt><dd class="text-fg">{{ '%.1f'|format(ns.weighted) }}</dd></div>
+        <div class="flex gap-1.5"><dt class="text-fg-muted">Bonus infra</dt><dd class="{{ 'text-pass-fg' if infra_bonus else 'text-fg-muted' }}">+{{ infra_bonus }}</dd></div>
+        <div class="flex gap-1.5"><dt class="text-fg-muted">Score calculé</dt><dd class="text-fg">{{ raw_score }}</dd></div>
+        {% if cap_gap %}
+        <div class="flex gap-1.5"><dt class="text-fg-muted">Plafond</dt><dd class="text-critical-fg">{{ cap.get('max', score) }} ({{ cap.get('grade', '?') }})</dd></div>
+        {% endif %}
+        <div class="ml-auto flex gap-1.5"><dt class="text-fg-muted">Final</dt><dd class="font-semibold {{ score_color }}">{{ score }}/100</dd></div>
+    </dl>
+</section>
+{% endif %}
+
+<!-- 4. MATRICE DES EN-TÊTES : une tuile par en-tête réellement analysé, triée par risque -->
+<section class="panel reveal mt-5" style="--i: 3" aria-labelledby="headersTitle">
     <header class="panel-header">
         <h2 id="headersTitle" class="panel-title"><i class="fas fa-shield-alt" aria-hidden="true"></i> En-têtes de sécurité</h2>
-        <span class="text-xs tabular-nums text-fg-muted">{{ header_rows|selectattr('tone', 'equalto', 'pass')|list|length }}/{{ header_total }} actifs</span>
+        <span class="text-xs tabular-nums text-fg-muted">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span>
     </header>
     <div class="panel-body">
         {% if header_total %}
         {# Couverture : proportions réelles par statut #}
         <div class="flex h-1.5 w-full gap-0.5 overflow-hidden rounded-full" role="img"
-             aria-label="Couverture : {% for label, t, bg in coverage %}{{ header_rows|selectattr('tone', 'equalto', t)|list|length }} {{ label|lower }}{{ ', ' if not loop.last }}{% endfor %}">
-            {% for label, t, bg in coverage %}
-                {% set n = header_rows|selectattr('tone', 'equalto', t)|list|length %}
+             aria-label="Couverture : {% for label, g, bg in coverage %}{% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}{% if n %}{{ n }} {{ label|lower }}{{ ', ' if not loop.last }}{% endif %}{% endfor %}">
+            {% for label, g, bg in coverage %}
+                {% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}
                 {% if n %}<span class="{{ bg }} h-full" style="flex: {{ n }} 1 0"></span>{% endif %}
             {% endfor %}
         </div>
         <ul class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted" aria-hidden="true">
-            {% for label, t, bg in coverage %}
-                {% set n = header_rows|selectattr('tone', 'equalto', t)|list|length %}
+            {% for label, g, bg in coverage %}
+                {% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}
                 {% if n %}<li class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm {{ bg }}"></span>{{ label }} <span class="font-mono tabular-nums text-fg">{{ n }}</span></li>{% endif %}
             {% endfor %}
         </ul>
 
         <ul class="mt-5 grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));">
             {% for row in header_rows|sort(attribute='rank') %}
+            {% set missing = row.group.startswith('missing') %}
             <li tabindex="0" data-tip="Scanner : {{ row.raw }}"
                 class="tip focus-ring flex flex-col gap-2.5 rounded-lg border p-3 transition-colors duration-150 hover:border-accent-fg/40
-                       border-line {{ 'bg-low/5 sev-low' if row.tone == 'low' else 'bg-surface-2/40' }}">
+                       border-line {{ ('bg-' ~ row.tone ~ '/5 sev-' ~ row.tone) if missing else 'bg-surface-2/40' }}">
                 <span class="truncate font-mono text-xs text-fg">{{ row.name }}</span>
                 <span class="flex items-center justify-between gap-2">
                     <span class="badge tone-{{ row.tone }}">{{ row.label }}</span>
-                    {% if row.impact %}<span class="font-mono text-2xs tabular-nums text-pass-fg">{{ row.impact }} pts</span>{% endif %}
+                    {% if row.impact is number %}<span class="font-mono text-2xs tabular-nums text-{{ row.itone }}-fg">{{ '%+d'|format(row.impact) }} pts</span>{% endif %}
                 </span>
                 <span class="sr-only">Statut brut du scanner : {{ row.raw }}</span>
             </li>
             {% endfor %}
         </ul>
         {% else %}
-        <p class="py-6 text-center text-xs text-fg-muted">Aucun en-tête analysé.</p>
+        <p class="py-6 text-center text-xs text-fg-muted">Aucun en-tête analysé{% if crit_failure %} : scan interrompu (HTTPS non forcé){% endif %}.</p>
         {% endif %}
     </div>
 </section>
 
-<!-- 3. CARTES AUTO-FIT : 1 colonne mobile → 2 → 3 sur large, sans media query -->
-<div class="auto-grid mt-5">
+<!-- 5. CARTES AUTO-FIT : 1 colonne mobile → 2 → 3 sur large, sans media query -->
+<div class="auto-grid mt-5" style="--min: 30rem">
 
-    <section class="panel reveal flex flex-col" style="--i: 2" aria-labelledby="cookiesTitle">
+    {% set tcat = cat_by_key.get('tls') %}
+    <section class="panel reveal flex flex-col" style="--i: 4" aria-labelledby="tlsTitle">
+        <header class="panel-header">
+            <h2 id="tlsTitle" class="panel-title"><i class="fas fa-lock" aria-hidden="true"></i> TLS / SSL</h2>
+            {% if tcat %}<span class="font-mono text-xs tabular-nums text-fg-muted">{{ tcat.score }}/100 · poids {{ tcat.weight }} %</span>{% endif %}
+        </header>
+        <div class="overflow-x-auto">
+            <table class="table">
+                <thead><tr><th scope="col">Contrôle</th><th scope="col">Résultat</th><th scope="col" class="text-right">Statut</th><th scope="col" class="text-right">Impact</th></tr></thead>
+                <tbody>
+                    {% for r in tls_rows|sort(attribute='rank') %}{{ check_row(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    {% set dcat = cat_by_key.get('dns') %}
+    <section class="panel reveal flex flex-col" style="--i: 5" aria-labelledby="dnsTitle">
+        <header class="panel-header">
+            <h2 id="dnsTitle" class="panel-title"><i class="fas fa-network-wired" aria-hidden="true"></i> DNS &amp; messagerie</h2>
+            {% if dns_rows and dcat %}<span class="font-mono text-xs tabular-nums text-fg-muted">{{ dcat.score }}/100 · poids {{ dcat.weight }} %</span>
+            {% elif not dns_rows %}<span class="badge tone-neutral">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
+        </header>
+        {% if dns_rows %}
+        <div class="overflow-x-auto">
+            <table class="table">
+                <thead><tr><th scope="col">Contrôle</th><th scope="col">Résultat</th><th scope="col" class="text-right">Statut</th><th scope="col" class="text-right">Impact</th></tr></thead>
+                <tbody>
+                    {% for r in dns_rows|sort(attribute='rank') %}{{ check_row(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="px-5 py-6 text-center text-xs text-fg-muted">
+            {% if crit_failure %}Scan interrompu (HTTPS non forcé) : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR non contrôlés.
+            {% else %}Audit antérieur aux contrôles SPF, DMARC, DKIM, DNSSEC, CAA et AXFR. Relancez un scan pour les obtenir.{% endif %}
+        </p>
+        {% endif %}
+    </section>
+
+    <section class="panel reveal flex flex-col" style="--i: 6" aria-labelledby="cookiesTitle">
         <header class="panel-header">
             <h2 id="cookiesTitle" class="panel-title"><i class="fas fa-cookie-bite" aria-hidden="true"></i> Cookies</h2>
             <span class="text-xs tabular-nums text-fg-muted">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span>
@@ -216,7 +542,7 @@
         </div>
     </section>
 
-    <section class="panel reveal" style="--i: 3" aria-labelledby="infraTitle">
+    <section class="panel reveal" style="--i: 7" aria-labelledby="infraTitle">
         <header class="panel-header"><h2 id="infraTitle" class="panel-title"><i class="fas fa-server" aria-hidden="true"></i> Infrastructure</h2></header>
         <dl class="divide-y divide-line">
             <div class="flex items-center justify-between gap-3 px-5 py-3">
@@ -225,7 +551,7 @@
             </div>
             <div class="flex items-center justify-between gap-3 px-5 py-3">
                 <dt class="text-xs text-fg-muted">Serveur</dt>
-                <dd class="truncate font-mono text-xs text-fg" title="{{ scan['server'] }}">{{ scan['server'] }}</dd>
+                <dd class="truncate font-mono text-xs text-fg" title="{{ scan.get('server', '') }}">{{ scan.get('server', '—') }}</dd>
             </div>
             <div class="flex items-center justify-between gap-3 px-5 py-3">
                 <dt class="text-xs text-fg-muted">Certificat TLS</dt>
@@ -233,7 +559,7 @@
             </div>
             <div class="flex items-center justify-between gap-3 px-5 py-3">
                 <dt class="text-xs text-fg-muted">Émetteur</dt>
-                <dd class="truncate font-mono text-xs text-fg" title="{{ ssl.get('issuer') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd>
+                <dd class="truncate font-mono text-xs text-fg" title="{{ ssl.get('issuer', '') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd>
             </div>
             {% if ssl.get('expiry') and ssl.get('expiry') != 'N/A' %}
             <div class="flex items-center justify-between gap-3 px-5 py-3">
@@ -244,16 +570,19 @@
         </dl>
     </section>
 
-    <section class="panel reveal flex flex-col" style="--i: 4" aria-labelledby="scoreCalcTitle">
+    {% if not has_v2 %}
+    {# Repli ancien audit : détail additif du barème v1 #}
+    <section class="panel reveal flex flex-col" style="--i: 8" aria-labelledby="scoreCalcTitle">
         <header class="panel-header">
             <h2 id="scoreCalcTitle" class="panel-title"><i class="fas fa-calculator" aria-hidden="true"></i> Calcul du score</h2>
-            <span class="font-mono text-xs text-fg-muted">base 50</span>
+            <span class="flex items-center gap-2"><span class="font-mono text-xs text-fg-muted">base 50</span><span class="badge tone-neutral">Barème v1</span></span>
         </header>
         <div class="max-h-96 overflow-y-auto">
             <table class="table">
                 <thead><tr><th scope="col">Critère</th><th scope="col" class="text-right">Impact</th></tr></thead>
                 <tbody>
-                    {% for detail in scan['score_details'] %}
+                    {% for detail_raw in (scan.get('score_details') or []) %}
+                    {% set detail = detail_raw|string %}
                     {% set raw = detail.split(' ')[0] %}
                     {% set delta = raw|int %}
                     {% if delta > 0 %}{% set dtone = 'pass' %}
@@ -274,8 +603,9 @@
             <span class="font-mono font-semibold tabular-nums {{ score_color }}">{{ score }}/100</span>
         </div>
     </section>
+    {% endif %}
 
-    <section class="panel reveal" style="--i: 5" aria-labelledby="aiTitle">
+    <section class="panel reveal" style="--i: 9" aria-labelledby="aiTitle">
         <header class="panel-header">
             <h2 id="aiTitle" class="panel-title"><i class="fas fa-file-lines" aria-hidden="true"></i> Analyse IA</h2>
             <span class="text-xs text-fg-muted">Générée par LLM · à vérifier</span>
@@ -283,14 +613,15 @@
         <div class="panel-body space-y-6">
             <div>
                 <h3 class="label">Résumé exécutif</h3>
-                <p class="mt-2 max-w-prose text-sm leading-6 text-fg">{{ audit.ai_report['executive'] }}</p>
+                <p class="mt-2 max-w-prose text-sm leading-6 text-fg">{{ ai.get('executive', '') }}</p>
             </div>
 
             <div>
                 <h3 class="label">Points techniques clés</h3>
-                {% if audit.ai_report['technical'] is sequence and audit.ai_report['technical'] is not string %}
+                {% set technical = ai.get('technical', '') %}
+                {% if technical is sequence and technical is not string %}
                     <ul class="mt-2 divide-y divide-line">
-                        {% for point in audit.ai_report['technical'] %}
+                        {% for point in technical %}
                             <li class="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
                                 <span class="mt-2 h-1 w-1 shrink-0 rounded-full bg-accent-fg" aria-hidden="true"></span>
                                 <span class="markdown-text text-dense text-fg-muted">{{ point }}</span>
@@ -298,13 +629,13 @@
                         {% endfor %}
                     </ul>
                 {% else %}
-                    <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">{{ audit.ai_report['technical'] }}</pre>
+                    <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">{{ technical }}</pre>
                 {% endif %}
             </div>
         </div>
     </section>
 
-    <section class="panel reveal" style="--i: 6" aria-labelledby="radarTitle">
+    <section class="panel reveal" style="--i: 10" aria-labelledby="radarTitle">
         <header class="panel-header">
             <h2 id="radarTitle" class="panel-title">
                 <i class="fas fa-crosshairs" aria-hidden="true"></i> Surface d'attaque
@@ -326,25 +657,35 @@
     {% include "components/vulnerability_chart.html" %}
 </div>
 
-<!-- Barème : dialog natif -->
-<dialog id="scoreModal" class="panel reveal w-full max-w-md p-0 text-fg" aria-labelledby="scoreModalTitle">
+<!-- Barème : dialog natif (Échap, piège du focus et retour du focus fournis par showModal) -->
+<dialog id="scoreModal" class="panel reveal w-full max-w-lg max-h-[90vh] overflow-y-auto p-0 text-fg" aria-labelledby="scoreModalTitle">
     <header class="panel-header">
-        <h2 id="scoreModalTitle" class="panel-title">Barème SecuScope</h2>
+        <h2 id="scoreModalTitle" class="panel-title">Barème SecuScope{% if not has_v2 %} <span class="badge tone-neutral">v1</span>{% endif %}</h2>
         <button type="button" onclick="document.getElementById('scoreModal').close()" class="btn btn-icon btn-ghost -mr-2" aria-label="Fermer le barème">
             <i class="fas fa-times" aria-hidden="true"></i>
         </button>
     </header>
+    {% if has_v2 %}
     {% set scale = [
-        ('A', 'info', 'Sécurité optimale. TLS/SSL opérationnel, pare-feu applicatif (WAF) actif ou infrastructure protégée.'),
-        ('B', 'info', 'Configuration robuste. Chiffrement validé mais absence de certains en-têtes défensifs mineurs.'),
-        ('C', 'medium', 'Socle correct. Plusieurs en-têtes défensifs ou attributs de cookies manquent.'),
-        ('D', 'high', 'Protections partielles. Durcissement HTTP et cookies à reprendre en priorité.'),
-        ('F', 'critical', 'Vulnérabilités critiques. Certificat TLS invalide, site accessible en clair (HTTP non forcé) ou absence totale de protections.')
+        ('A', 'Configuration solide sur les quatre catégories, aucune faille plafonnante.'),
+        ('B', 'Bonne base ; quelques déductions modérées dans une ou deux catégories.'),
+        ('C', 'Lacunes notables, ou plafond C : SSLv2/SSLv3 accepté, transfert de zone AXFR ouvert.'),
+        ('D', 'Protections partielles, ou plafond D : certificat TLS invalide.'),
+        ('F', 'Défaillances majeures, ou plafond F : HTTP en clair / HTTPS non forcé.')
     ] %}
+    {% else %}
+    {% set scale = [
+        ('A', 'Sécurité optimale. TLS/SSL opérationnel, pare-feu applicatif (WAF) actif ou infrastructure protégée.'),
+        ('B', 'Configuration robuste. Chiffrement validé mais absence de certains en-têtes défensifs mineurs.'),
+        ('C', 'Socle correct. Plusieurs en-têtes défensifs ou attributs de cookies manquent.'),
+        ('D', 'Protections partielles. Durcissement HTTP et cookies à reprendre en priorité.'),
+        ('F', 'Vulnérabilités critiques. Certificat TLS invalide, site accessible en clair (HTTP non forcé) ou absence totale de protections.')
+    ] %}
+    {% endif %}
     <ul class="divide-y divide-line">
-        {% for letter, ltone, text in scale %}
+        {% for letter, text in scale %}
         <li class="flex items-start gap-3 px-5 py-3 {{ 'bg-surface-2' if letter == grade }}" {% if letter == grade %}aria-current="true"{% endif %}>
-            <span class="inline-grid h-8 w-8 shrink-0 place-items-center rounded-md border text-sm font-bold tone-{{ ltone }}">{{ letter }}</span>
+            <span class="inline-grid h-8 w-8 shrink-0 place-items-center rounded-md border text-sm font-bold tone-{{ grade_tones[letter] }}">{{ letter }}</span>
             <div class="min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="font-mono text-xs tabular-nums text-fg">{{ grade_ranges[letter] }}</span>
@@ -355,6 +696,39 @@
         </li>
         {% endfor %}
     </ul>
+
+    {% if has_v2 %}
+    <div class="border-t border-line">
+        <h3 class="label px-5 pt-4">Pondération</h3>
+        <table class="table mt-1">
+            <thead class="sr-only"><tr><th scope="col">Catégorie</th><th scope="col">Poids</th></tr></thead>
+            <tbody>
+                {% for c in cat_rows|sort(attribute='weight', reverse=true) %}
+                <tr><td class="text-xs">{{ c.label }}</td><td class="num text-xs text-fg-muted">{{ c.weight }} %</td></tr>
+                {% endfor %}
+                <tr><td class="text-xs">Bonus infrastructure (WAF/CDN)</td><td class="num text-xs text-fg-muted">+5 / couche, max +10</td></tr>
+            </tbody>
+        </table>
+        <p class="px-5 pb-3 text-2xs text-fg-subtle">Chaque catégorie part de 100 et déduit par problème observé. Un contrôle non vérifié ne déduit rien.</p>
+    </div>
+    <div class="border-t border-line">
+        <h3 class="label px-5 pt-4">Plafonds (faille critique)</h3>
+        <table class="table mt-1">
+            <thead class="sr-only"><tr><th scope="col">Faille</th><th scope="col">Score maximum</th></tr></thead>
+            <tbody>
+                {% for ckey, clabel, cmax, cgrade in [('http', 'HTTP en clair / HTTPS non forcé', 20, 'F'), ('cert', 'Certificat TLS invalide', 59, 'D'), ('sslv', 'SSLv2/SSLv3 accepté', 79, 'C'), ('axfr', 'Transfert de zone AXFR ouvert', 79, 'C')] %}
+                {% set hit = ckey in critical_keys %}
+                <tr {% if hit %}aria-current="true"{% endif %}>
+                    <td class="text-xs {{ 'sev-critical' if hit }}">{{ clabel }}{% if hit %} <span class="badge tone-critical ml-1">Ce site</span>{% endif %}</td>
+                    <td class="num text-xs whitespace-nowrap text-fg-muted">≤ {{ cmax }} <span class="badge tone-{{ grade_tones[cgrade] }} ml-1">{{ cgrade }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p class="px-5 pb-3 text-2xs text-fg-subtle">Appliqués après le bonus : une faille grave ne se rachète pas.</p>
+    </div>
+    {% endif %}
+
     <div class="border-t border-line p-4">
         <button type="button" onclick="document.getElementById('scoreModal').close()" class="btn btn-md btn-secondary w-full">Fermer</button>
     </div>
@@ -383,7 +757,7 @@
     // 1. RADAR CHART CONFIGURATION (Attack Surface) — estimation LLM = télémétrie indigo
     const ctx = document.getElementById('securityRadar');
     {# Sortie LLM : forcée en entier pour ne jamais injecter de code dans le <script> #}
-    {% set risks = audit.ai_report.get('risks') if audit.ai_report.get('risks') is mapping else {} %}
+    {% set risks = ai.get('risks') if ai.get('risks') is mapping else {} %}
     const riskData = {
         mitm: {{ risks.get('mitm', 50)|int }},
         xss: {{ risks.get('xss', 50)|int }},
@@ -443,12 +817,20 @@
 
 <script>
     // 3. BAR CHART CONFIGURATION (Vulnerabilities synthesis)
-    const vulnerabilityDetails = {{ audit.scan_data['score_details']|tojson }};
-    const vulnerabilityMissingHeaders = {{ audit.scan_data['missing_headers']|tojson }};
-    const vulnerabilityCookies = {{ audit.scan_data['cookies_security']|tojson }};
-    const vulnerabilitySslValid = {{ 'true' if audit.scan_data['ssl'].get('valid') else 'false' }};
+    // Barème v2 : comptes calculés côté template depuis score_breakdown + données (null sur un ancien audit).
+    const vulnerabilityV2Counts = {{ v2_counts|tojson }};
+    // Repli v1 : ancienne logique sur score_details
+    const vulnerabilityDetails = {{ (scan.get('score_details') or [])|tojson }};
+    const vulnerabilityMissingHeaders = {{ (scan.get('missing_headers') or [])|tojson }};
+    const vulnerabilityCookies = {{ (scan.get('cookies_security') or [])|tojson }};
+    const vulnerabilitySslValid = {{ 'true' if ssl.get('valid') else 'false' }};
 
-    function getVulnerabilityCounts(details, missingHeaders, cookies, sslValid) {
+    function getVulnerabilityCounts(details, missingHeaders, cookies, sslValid, v2Counts) {
+        // v2 : CRITIQUE = faille plafonnante · MOYEN = déduction ≥ 12 · FAIBLE = déduction ≤ 10
+        if (v2Counts) {
+            return { critical: Number(v2Counts.critical) || 0, medium: Number(v2Counts.medium) || 0, low: Number(v2Counts.low) || 0 };
+        }
+
         const counts = { critical: 0, medium: 0, low: 0 };
 
         details.forEach((item) => {
@@ -473,10 +855,7 @@
             }
         });
 
-        if (counts.critical + counts.medium + counts.low === 0) {
-            counts.low = 1;
-        }
-
+        // Aucun finding = 0 partout (plus de faux « 1 faible » sur un site sans défaut)
         return counts;
     }
 
@@ -484,23 +863,25 @@
         vulnerabilityDetails,
         vulnerabilityMissingHeaders,
         vulnerabilityCookies,
-        vulnerabilitySslValid
+        vulnerabilitySslValid,
+        vulnerabilityV2Counts
     );
 
     // KPI du hero : un zéro n'est pas un risque, il passe en neutre
     const setCount = (id, n) => {
         const el = document.getElementById(id);
+        if (!el) return;
         el.textContent = n;
-        if (n === 0) {
-            el.classList.remove(el.dataset.tone);
-            el.classList.add('text-fg-muted');
-        }
+        el.classList.toggle(el.dataset.tone, n !== 0);
+        el.classList.toggle('text-fg-muted', n === 0);
     };
     setCount('criticalCount', vulnerabilityCounts.critical);
     setCount('mediumCount', vulnerabilityCounts.medium);
     setCount('lowCount', vulnerabilityCounts.low);
 
     const vulnerabilityCtx = document.getElementById('vulnerabilityChart');
+    vulnerabilityCtx.setAttribute('aria-label',
+        `Failles par sévérité : ${vulnerabilityCounts.critical} critique(s), ${vulnerabilityCounts.medium} moyenne(s), ${vulnerabilityCounts.low} faible(s)`);
     new Chart(vulnerabilityCtx, {
         type: 'bar',
         data: {
@@ -527,6 +908,7 @@
                 },
                 y: {
                     beginAtZero: true,
+                    suggestedMax: 1,
                     precision: 0,
                     border: { display: false },
                     grid: { color: ssToken('line') },
