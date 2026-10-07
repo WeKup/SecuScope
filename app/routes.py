@@ -1,9 +1,11 @@
 import os
+import logging
+from datetime import datetime, timedelta
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, abort
 from werkzeug.security import check_password_hash, generate_password_hash
 import validators
 from app.services.scanner import analyze_target
-from app.services.ai import generate_report
+from app.services.ai import generate_report, is_valid_report, posture_signature
 from app.services.scoring import calculate_trust_score  
 from app.models import db, Audit, User
 import uuid
@@ -11,6 +13,10 @@ from urllib.parse import urlparse
 
 
 bp = Blueprint('main', __name__)
+logger = logging.getLogger(__name__)
+
+AI_CACHE_DAYS = 7            # fenêtre de réutilisation d'un rapport IA à posture identique
+RECENT_SCAN_MINUTES = 10     # même session, même domaine : on affiche le scan récent au lieu d'en relancer un
 
 ALLOWED_MODELS = {
     "gemini-2.5-flash",
@@ -53,6 +59,40 @@ def inject_ui_context():
 
 def _server_api_key():
     return os.getenv('GOOGLE_API_KEY', '').strip()
+
+
+def _ai_report_for(scan_res, domain):
+    """Rapport IA pour ce scan : réutilisé si un audit récent du même domaine a la même posture, sinon
+    généré par le modèle. L'audit (historique) est créé dans tous les cas : seul le TEXTE est mis en cache."""
+    signature = posture_signature(scan_res)
+    cutoff = datetime.utcnow() - timedelta(days=AI_CACHE_DAYS)
+    candidates = (Audit.query
+                  .filter(Audit.domain == domain, Audit.timestamp >= cutoff,
+                          Audit.ai_report['posture_signature'].as_string() == signature)
+                  .order_by(Audit.id.desc()).limit(5).all())
+    for previous in candidates:
+        if is_valid_report(previous.ai_report):
+            logger.info("Rapport IA réutilisé pour %s (audit %s, même posture) : aucun appel Gemini", domain, previous.id)
+            return {**previous.ai_report, 'reused_from': previous.id}
+
+    logger.info("Rapport IA : appel Gemini pour %s (posture nouvelle ou sans rapport valide)", domain)
+    report = generate_report(
+        scan_res,
+        api_key=session.get('user_api_key') or _server_api_key(),
+        model_id=session.get('user_model_id') or DEFAULT_MODEL,
+    )
+    if is_valid_report(report):
+        report['posture_signature'] = signature  # mémorisée avec le rapport, jamais affichée
+    return report
+
+
+def _recent_scan(domain):
+    """Scan du même domaine par la même session il y a moins de RECENT_SCAN_MINUTES, ou None."""
+    cutoff = datetime.utcnow() - timedelta(minutes=RECENT_SCAN_MINUTES)
+    return (Audit.query
+            .filter(Audit.domain == domain, Audit.session_id == session.get('session_id', ''),
+                    Audit.timestamp >= cutoff)
+            .order_by(Audit.id.desc()).first())
 
 def normalize_domain(raw: str) -> str:
     """Extrait le domaine nu depuis une saisie libre :
@@ -120,8 +160,14 @@ def index():
             return render_template('index.html', error="Domaine invalide")
         
         if 'session_id' not in session:
-            session['session_id'] = str(uuid.uuid4())    
-            
+            session['session_id'] = str(uuid.uuid4())
+
+        # Anti double-scan involontaire : même domaine scanné par cette session il y a peu -> rapport existant.
+        if request.form.get('force') != '1':
+            recent = _recent_scan(domain)
+            if recent is not None:
+                return redirect(url_for('main.dashboard', audit_id=recent.id, recent=1))
+
         scan_res = analyze_target(domain)
         
         # Check pour faille SSRF renvoyée par le scanner
@@ -140,12 +186,8 @@ def index():
         # score_breakdown : le vrai détail par catégorie (futur front).
         scan_res['score_details'] = score_data['details']
         scan_res['score_breakdown'] = {k: score_data[k] for k in ('categories', 'infra_bonus', 'raw_score', 'cap')}
-        ai_res = generate_report(
-            scan_res,
-            api_key=session.get('user_api_key') or _server_api_key(),
-            model_id=session.get('user_model_id') or DEFAULT_MODEL,
-        )
-        
+        ai_res = _ai_report_for(scan_res, domain)
+
         audit = Audit(
             domain=domain,
             scan_data=scan_res,
@@ -158,7 +200,10 @@ def index():
         db.session.commit()
         return redirect(url_for('main.dashboard', audit_id=audit.id))
         
-    return render_template('index.html')
+    # Lien « forcer un nouveau scan » : domaine prérempli, le consentement reste à cocher.
+    prefill = normalize_domain(request.args.get('domain', ''))
+    return render_template('index.html', prefill_domain=prefill if validators.domain(prefill) else '',
+                           force=request.args.get('force') == '1')
 
 HISTORY_LIMIT = 15
 
@@ -182,7 +227,13 @@ def dashboard(audit_id):
     audit = Audit.query.get_or_404(audit_id)
     if audit.session_id != session.get('session_id'):
         abort(403)
-    return render_template('dashboard.html', audit=audit, score_history=_score_history(audit))
+    recent_notice = None
+    if request.args.get('recent') and audit.timestamp:
+        age = datetime.utcnow() - audit.timestamp
+        if age <= timedelta(minutes=RECENT_SCAN_MINUTES):
+            recent_notice = {'minutes': max(1, int(age.total_seconds() // 60))}
+    return render_template('dashboard.html', audit=audit, score_history=_score_history(audit),
+                           recent_notice=recent_notice)
 
 @bp.route('/logout')
 def logout():

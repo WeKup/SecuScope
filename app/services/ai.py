@@ -1,4 +1,5 @@
 from google import genai
+import hashlib
 import logging
 import json
 import time
@@ -6,6 +7,12 @@ import time
 from app.services.scoring import deduction_severity, failure_label
 
 logger = logging.getLogger(__name__)
+
+# À incrémenter quand le prompt change : invalide les rapports mis en cache avec l'ancien prompt.
+PROMPT_VERSION = "2026-10-v3"
+
+# À incrémenter quand le prompt change : invalide les rapports mis en cache avec l'ancien prompt.
+PROMPT_VERSION = "2026-10-v3"
 
 DEFAULT_RISKS = {"mitm": 0, "xss": 0, "clickjacking": 0, "sniffing": 0, "waf": 0}
 
@@ -245,6 +252,80 @@ TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/a
    - "sniffing": (basé sur X-Content-Type-Options)
    - "waf": (basé sur WAF détecté + infrastructure)
 """
+
+
+def posture_signature(scan_data):
+    """Empreinte stable de la posture vue par l'IA : domaine, score, détail par catégorie (notes et
+    déductions), cap, couches WAF/CDN et mode d'échec. Deux scans à posture identique ont la même
+    signature : le rapport IA du premier peut être réutilisé sans rappeler le modèle."""
+    breakdown = scan_data.get("score_breakdown") or {}
+    categories = breakdown.get("categories") or {}
+    cap = breakdown.get("cap") or {}
+    payload = {
+        "prompt": PROMPT_VERSION,
+        "domain": scan_data.get("domain"),
+        "score": scan_data.get("numeric_score"),
+        "grade": scan_data.get("score"),
+        "categories": {
+            key: {
+                "score": cat.get("score"),
+                "evaluated": cat.get("evaluated", True),
+                "findings": sorted((str(d.get("label")), d.get("points")) for d in cat.get("deductions") or []),
+            }
+            for key, cat in sorted(categories.items()) if isinstance(cat, dict)
+        },
+        "cap": {"max": cap.get("max"), "reasons": sorted(cap.get("reasons") or [])},
+        "waf": sorted((str(l.get("name")), bool(l.get("protective")))
+                      for l in scan_data.get("waf_layers") or [] if isinstance(l, dict)),
+        "failure": [bool(scan_data.get("critical_failure")), scan_data.get("failure_kind")],
+        "http_readable": scan_data.get("http_readable"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def is_valid_report(report):
+    """Un rapport réutilisable : généré par le modèle, avec résumé et points techniques."""
+    return (isinstance(report, dict) and report.get("ai_unavailable") is not True
+            and isinstance(report.get("executive"), str) and bool(report["executive"].strip())
+            and isinstance(report.get("technical"), list) and bool(report["technical"]))
+
+
+def posture_signature(scan_data):
+    """Empreinte stable de la posture vue par l'IA : domaine, score, détail par catégorie (notes et
+    déductions), cap, couches WAF/CDN et mode d'échec. Deux scans à posture identique ont la même
+    signature : le rapport IA du premier peut être réutilisé sans rappeler le modèle."""
+    breakdown = scan_data.get("score_breakdown") or {}
+    categories = breakdown.get("categories") or {}
+    cap = breakdown.get("cap") or {}
+    payload = {
+        "prompt": PROMPT_VERSION,
+        "domain": scan_data.get("domain"),
+        "score": scan_data.get("numeric_score"),
+        "grade": scan_data.get("score"),
+        "categories": {
+            key: {
+                "score": cat.get("score"),
+                "evaluated": cat.get("evaluated", True),
+                "findings": sorted((str(d.get("label")), d.get("points")) for d in cat.get("deductions") or []),
+            }
+            for key, cat in sorted(categories.items()) if isinstance(cat, dict)
+        },
+        "cap": {"max": cap.get("max"), "reasons": sorted(cap.get("reasons") or [])},
+        "waf": sorted((str(l.get("name")), bool(l.get("protective")))
+                      for l in scan_data.get("waf_layers") or [] if isinstance(l, dict)),
+        "failure": [bool(scan_data.get("critical_failure")), scan_data.get("failure_kind")],
+        "http_readable": scan_data.get("http_readable"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def is_valid_report(report):
+    """Un rapport réutilisable : généré par le modèle, avec résumé et points techniques."""
+    return (isinstance(report, dict) and report.get("ai_unavailable") is not True
+            and isinstance(report.get("executive"), str) and bool(report["executive"].strip())
+            and isinstance(report.get("technical"), list) and bool(report["technical"]))
 
 
 def generate_report(scan_data, api_key, model_id):

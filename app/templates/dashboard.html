@@ -346,6 +346,14 @@
 {% endfor %}
 {% set finds = finds|sort(attribute='key') %}
 
+{% if recent_notice %}
+<div class="glass flash" role="status" style="margin-bottom:6px">
+    <span class="i" aria-hidden="true">i</span>
+    <p>Ce domaine a déjà été scanné il y a {{ recent_notice.minutes }} min dans cette session : voici le rapport existant.
+       <a class="linkbtn" style="margin:0 0 0 6px" href="{{ url_for('main.index', domain=audit.domain, force=1) }}">Forcer un nouveau scan</a></p>
+</div>
+{% endif %}
+
 <div class="g-{{ gk }}">
 
 <!-- 1. HERO : sceau-verdict + surface d'attaque -->
