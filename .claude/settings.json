@@ -1,5 +1,6 @@
 {
   "enabledPlugins": {
-    "frontend-design@anthropic-plugin-directory": true
+    "frontend-design@anthropic-plugin-directory": true,
+    "web-design-guidelines@design-plugins": true
   }
 }
