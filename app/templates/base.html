@@ -20,12 +20,10 @@
             <a href="{{ url_for('main.index') }}" class="wm" aria-label="SecuScope, nouveau scan">Secu<b>Scope</b></a>
             {% block header_target %}{% endblock %}
             <div class="hright">
-                {% if session.get('user_api_key') %}
-                    <span class="hmodel"><span class="sr-only">IA configurée :</span>{{ session.get('user_model_id') }}</span>
-                    <a href="{{ url_for('main.index') }}" class="btn">Nouveau scan</a>
+                {% if session.get('user_id') %}
+                    <span class="hmodel" title="{{ 'Clé Gemini personnelle' if own_key else 'Clé Gemini du serveur' }}"><span class="sr-only">Modèle IA :</span>{{ current_model }}</span>
+                    {% if request.endpoint != 'main.index' %}<a href="{{ url_for('main.index') }}" class="btn">Nouveau scan</a>{% endif %}
                     <a href="{{ url_for('main.logout') }}" class="hlink">Déconnexion</a>
-                {% else %}
-                    <a href="{{ url_for('main.login') }}" class="hmodel off">IA non configurée</a>
                 {% endif %}
             </div>
         </div>

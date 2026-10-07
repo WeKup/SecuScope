@@ -1,9 +1,11 @@
+import os
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, abort
+from werkzeug.security import check_password_hash, generate_password_hash
 import validators
 from app.services.scanner import analyze_target
 from app.services.ai import generate_report
 from app.services.scoring import calculate_trust_score  
-from app.models import db, Audit
+from app.models import db, Audit, User
 import uuid
 from urllib.parse import urlparse
 
@@ -17,6 +19,40 @@ ALLOWED_MODELS = {
 }
 DEFAULT_MODEL = "gemini-2.5-flash"
 MAX_API_KEY_LENGTH = 256
+MAX_EMAIL_LENGTH = 255
+MAX_PASSWORD_LENGTH = 256
+
+# Hash factice : on le vérifie quand l'e-mail est inconnu pour que le temps de réponse
+# ne révèle pas quels comptes existent.
+_DUMMY_HASH = generate_password_hash("secuscope-dummy-password")
+
+# Seuls ces endpoints sont accessibles sans compte (les fichiers statiques ne passent pas par le blueprint).
+PUBLIC_ENDPOINTS = {'main.login', 'main.health'}
+
+
+@bp.before_request
+def require_login():
+    """Toute l'application est derrière connexion, sauf la page de login et /health."""
+    if request.endpoint in PUBLIC_ENDPOINTS:
+        return None
+    user_id = session.get('user_id')
+    if not user_id or db.session.get(User, user_id) is None:
+        session.clear()
+        return redirect(url_for('main.login'))
+    return None
+
+
+@bp.app_context_processor
+def inject_ui_context():
+    """Modèle IA effectif et origine de la clé, pour le header."""
+    return {
+        'current_model': session.get('user_model_id') or DEFAULT_MODEL,
+        'own_key': bool(session.get('user_api_key')),
+    }
+
+
+def _server_api_key():
+    return os.getenv('GOOGLE_API_KEY', '').strip()
 
 def normalize_domain(raw: str) -> str:
     """Extrait le domaine nu depuis une saisie libre :
@@ -33,21 +69,39 @@ def normalize_domain(raw: str) -> str:
     return host.lower().rstrip(".")
 
 
+@bp.route('/health')
+def health():
+    return {"status": "ok"}, 200
+
+
 @bp.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        api_key = request.form.get('api_key', '').strip()
+        email = (request.form.get('email') or '').strip().lower()
+        password = request.form.get('password') or ''
+        api_key = (request.form.get('api_key') or '').strip()
         model_id = request.form.get('model_id', DEFAULT_MODEL)
 
-        if not api_key or len(api_key) > MAX_API_KEY_LENGTH:
-            return render_template('login.html', error="Clé API invalide.")
+        user = None
+        if email and len(email) <= MAX_EMAIL_LENGTH and len(password) <= MAX_PASSWORD_LENGTH:
+            user = User.query.filter_by(email=email).first()
+        valid = user.check_password(password) if user else (check_password_hash(_DUMMY_HASH, password) and False)
+        if not valid:
+            return render_template('login.html', error="Identifiants invalides."), 401
+        if len(api_key) > MAX_API_KEY_LENGTH:
+            return render_template('login.html', error="Clé API invalide."), 400
 
+        session.clear()  # nouvelle session : pas de fixation, historique cloisonné par connexion
+        session.permanent = True
+        session['user_id'] = user.id
         if model_id not in ALLOWED_MODELS:
             model_id = DEFAULT_MODEL
-
-        session.permanent = True
-        session['user_api_key'] = api_key
         session['user_model_id'] = model_id
+        if api_key:  # surcharge optionnelle : sans elle, la clé serveur (GOOGLE_API_KEY) est utilisée
+            session['user_api_key'] = api_key
+        return redirect(url_for('main.index'))
+
+    if session.get('user_id'):
         return redirect(url_for('main.index'))
     return render_template('login.html')
 
@@ -58,9 +112,6 @@ def index():
         
         if not request.form.get('legal_consent'):
             return render_template('index.html', error="Vous devez certifier avoir l'autorisation de scanner ce domaine.")
-            
-        if 'user_api_key' not in session:
-            return render_template('login.html', error="Session expirée. Veuillez vous reconnecter")
             
         if not domain:
             return redirect(url_for('main.index'))
@@ -89,7 +140,11 @@ def index():
         # score_breakdown : le vrai détail par catégorie (futur front).
         scan_res['score_details'] = score_data['details']
         scan_res['score_breakdown'] = {k: score_data[k] for k in ('categories', 'infra_bonus', 'raw_score', 'cap')}
-        ai_res = generate_report(scan_res, api_key=session['user_api_key'], model_id=session['user_model_id'])
+        ai_res = generate_report(
+            scan_res,
+            api_key=session.get('user_api_key') or _server_api_key(),
+            model_id=session.get('user_model_id') or DEFAULT_MODEL,
+        )
         
         audit = Audit(
             domain=domain,
@@ -132,5 +187,5 @@ def dashboard(audit_id):
 @bp.route('/logout')
 def logout():
     session.clear()
-    flash("Session IA fermée avec succès.", "info")
+    flash("Vous êtes déconnecté.", "info")
     return redirect(url_for('main.login'))

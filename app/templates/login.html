@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Connexion IA — SecuScope{% endblock %}
+{% block title %}Connexion — SecuScope{% endblock %}
 
 {% block content %}
 <div class="landing">
     <div class="glass spot lcard rise" style="animation-delay:.05s">
-        <h1>Configurer l'analyse IA</h1>
-        <p class="say">Choisissez le modèle et renseignez votre clé Gemini pour générer le rapport de chaque audit.</p>
+        <h1>Connexion</h1>
+        <p class="say">Accès réservé. Le rapport IA est généré automatiquement, il n'y a aucune clé à renseigner.</p>
 
         {% if error %}
         <div class="errbox" role="alert"><span class="i" aria-hidden="true">!</span><span>{{ error }}</span></div>
@@ -15,18 +15,26 @@
         <form action="{{ url_for('main.login') }}" method="POST">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 
-            <label class="lb" for="model_id">Modèle IA</label>
-            <select id="model_id" name="model_id" class="input">
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash (recommandé)</option>
-                <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite (éco)</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash (legacy)</option>
-            </select>
+            <label class="lb" for="email">Adresse e-mail</label>
+            <input type="email" id="email" name="email" class="input" required autocomplete="username" autofocus>
 
-            <label class="lb" for="api_key">Clé API Google Gemini</label>
-            <input type="password" id="api_key" name="api_key" class="input" required placeholder="AIzaSy..." autocomplete="off">
-            <p class="hint">La clé reste en mémoire de session et ne sert qu'à générer les rapports d'audit.</p>
+            <label class="lb" for="password">Mot de passe</label>
+            <input type="password" id="password" name="password" class="input" required autocomplete="current-password">
 
-            <button type="submit" class="btn">Initialiser la session</button>
+            <details class="own-key">
+                <summary>Utiliser ma propre clé Gemini (optionnel)</summary>
+                <label class="lb" for="model_id">Modèle IA</label>
+                <select id="model_id" name="model_id" class="input">
+                    <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash (recommandé)</option>
+                    <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite (éco)</option>
+                    <option value="gemini-1.5-flash">Gemini 1.5 Flash (legacy)</option>
+                </select>
+                <label class="lb" for="api_key">Clé API Google Gemini</label>
+                <input type="password" id="api_key" name="api_key" class="input" placeholder="AIzaSy..." autocomplete="off">
+                <p class="hint">Sans clé personnelle, la clé du serveur est utilisée. La vôtre reste en mémoire de session et n'est jamais enregistrée.</p>
+            </details>
+
+            <button type="submit" class="btn">Se connecter</button>
         </form>
     </div>
 </div>
