@@ -43,7 +43,7 @@ L'accès est protégé par un compte : il n'y a pas d'inscription publique.
 | **Infrastructure** | Toutes les couches WAF/CDN réellement détectées, dédoublonnées par fournisseur (ex. « Akamai + Azure Front Door »). Preuves acceptées, par ordre : marqueurs passifs lus dans la réponse (`Server: gws`/`ESF`, `cf-ray`, `x-akamai-*`, `x-amz-cf-id`, valeurs `Server`/`Via`, cookies à préfixe comme `visid_incap_*`), puis CNAME du domaine, de l'hôte final et de sa chaîne vers un CDN ; wafw00f seulement si aucun vrai WAF/CDN n'a été trouvé, borné à 12 s. Un cache, un routeur de plateforme ou un répartiteur de charge (Varnish, Heroku, Shopify, ELB) est affiché sans bonus. L'émetteur du certificat, le PTR, les serveurs de noms et les noms de vendeur dans le corps de page ne comptent pas. Sans preuve : « Non détecté ». |
 | **Rapport IA** | Résumé exécutif, points techniques et estimation de protection sur 5 axes (MITM, XSS, clickjacking, sniffing, WAF), générés par Gemini à partir des constats |
 
-Un contrôle qui n'a pas pu être vérifié (timeout, analyse partielle, réponse HTTP non lue) **ne déduit aucun point** et s'affiche comme « indéterminé » ou « non vérifiable » : on observe, on ne suppose jamais. Aucune valeur n'est inventée : serveur, émetteur et stack sont ceux lus dans la réponse, ou « Inconnu ».
+Un contrôle qui n'a pas pu être vérifié (timeout, analyse partielle, réponse HTTP non lue) **ne déduit aucun point** et s'affiche comme « indéterminé » ou « non vérifiable » : on observe, on ne suppose jamais. Aucune valeur n'est inventée : serveur, émetteur et stack sont ceux lus dans la réponse, ou « Inconnu ». Quand une catégorie n'a pas pu être lue, le verdict est marqué « partiel » avec un badge « Analyse incomplète ».
 
 ---
 
@@ -74,6 +74,7 @@ Le détail complet (déductions, plafonds, formule d'agrégation) est dans [`doc
 
 - **Non intrusif** : aucune exploitation de vulnérabilité, aucun brute force, aucune charge.
 - **Sondes actives légères, assumées** : ce n'est pas un outil 100 % passif. Il établit des connexions TLS (sslyze énumère les versions et suites acceptées), tente un transfert de zone AXFR auprès des serveurs de noms, lance wafw00f (quelques requêtes HTTP non destructives) uniquement en dernier recours, quand les marqueurs passifs n'ont identifié aucun WAF/CDN, et requête les enregistrements DNS. Ces requêtes restent visibles dans les journaux de la cible et peuvent déclencher des alertes.
+- **Redirections** : les redirections HTTP (301/302/303/307/308, 5 sauts maximum) sont suivies à la main, et les contrôles de sécurité portent sur la réponse finale. Chaque saut est revalidé : une redirection vers une adresse non publique n'est jamais suivie.
 - **Anti-SSRF** : seules les adresses IP publiques sont analysées. Toute résolution vers une adresse privée, de bouclage, link-local, multicast, réservée ou non spécifiée est rejetée, et l'analyse TLS vise l'IP déjà validée, jamais le nom (pas de rebinding DNS).
 - **Consentement explicite** : une case « je suis propriétaire ou autorisé » est obligatoire avant chaque scan.
 - **Accès restreint** : l'application est derrière connexion, sans inscription publique, avec un historique cloisonné par session.
@@ -127,6 +128,7 @@ L'application écoute sur <http://127.0.0.1:8000>. Pour un test local en HTTP, m
 | `SECRET_KEY` | **Obligatoire.** Signe les sessions et les jetons CSRF ; l'application refuse de démarrer sans. Générer avec `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Identifiants PostgreSQL ; `docker-compose.yml` en déduit `DATABASE_URL` |
 | `GOOGLE_API_KEY` | Clé Gemini côté serveur, utilisée pour tous les scans. Jamais stockée en base. Sans clé, l'audit fonctionne et l'analyse IA est signalée « indisponible » |
+| `DNS_RESOLVERS` | Résolveurs interrogés pour les contrôles DNS (défaut `1.1.1.1,9.9.9.9`). `8.8.8.8` est volontairement évité : il tronque les grosses réponses TXT et fabriquerait de faux « SPF absent ». Vide : résolveur du système |
 | `SESSION_COOKIE_SECURE` | `true` par défaut ; `false` uniquement pour un test local en HTTP |
 
 Aucune valeur sensible n'est en dur dans le dépôt : `.env` est ignoré par Git et `.env.example` ne contient que des clés vides. Un utilisateur peut aussi saisir sa propre clé Gemini à la connexion (optionnel) ; elle reste en mémoire de session.

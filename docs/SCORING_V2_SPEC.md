@@ -164,6 +164,10 @@ renormalisés) et le dashboard l'affiche « Non évalué », jamais 100/100.
 | DNS | contrôles DNS non exécutés |
 | Cookies | scan interrompu, ou réponse HTTPS non lue |
 
+**Analyse incomplète** : hors scan interrompu, si une catégorie reste non évaluée (ou si l'analyse
+TLS est partielle), le verdict est marqué « partiel » : badge « Analyse incomplète », légende du
+sceau « VERDICT PARTIEL » et sous-titre qui n'affirme rien sur ce qui n'a pas été lu.
+
 Si aucune catégorie n'est évaluée (kill-switch HTTP en clair), le verdict est celui du
 plafond seul : **20 / F**.
 
