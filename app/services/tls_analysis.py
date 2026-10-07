@@ -6,8 +6,10 @@ informatives : aucun point. Un échec sslyze renvoie `status: "error"` sans
 points et sans casser le scan.
 """
 import logging
+import socket
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from sslyze import (
     ScanCommand,
@@ -23,10 +25,12 @@ from app.services.scanner import _is_public_ip, _resolve_records
 
 logger = logging.getLogger(__name__)
 
-TLS_SCAN_TIMEOUT = 40      # budget global (s) ; au-delà on abandonne l'analyse
-TLS_NETWORK_TIMEOUT = 7    # timeout de connexion sslyze (s)
-TLS_NETWORK_RETRIES = 1
-TLS_RETRY_MAX_ELAPSED = 20  # pas de 2e passe au-delà (s) : borne le coût total
+TLS_SCAN_BUDGET = 18       # budget total de l'analyse sslyze (s) ; au-delà on garde ce qui est terminé
+TLS_RETRY_WINDOW = 6       # durée max du retry ciblé 1.2/1.3 (s), pris sur le budget
+TLS_NETWORK_TIMEOUT = 5    # timeout de connexion sslyze (s)
+TLS_NETWORK_RETRIES = 0    # le seul retry est le passage ciblé 1.2/1.3 (voir _run_sslyze)
+TLS_CONCURRENCY = 8        # connexions simultanées vers la cible
+TLS_CONNECT_PRECHECK = 4   # test TCP du port 443 avant sslyze (s)
 
 # (clé de résultat, ScanCommand, attribut de AllScanCommandsAttempts)
 _PROTOCOLS = (
@@ -119,34 +123,59 @@ def _evaluate(attempts):
     }
 
 
-def _scan(domain, ip, commands):
-    """Un passage sslyze sur `commands` ; renvoie le résultat de serveur."""
-    request = ServerScanRequest(
+def _request(domain, ip, command):
+    return ServerScanRequest(
         server_location=ServerNetworkLocation(hostname=domain, port=443, ip_address=ip),
         network_configuration=ServerNetworkConfiguration(
             tls_server_name_indication=domain,
             network_timeout=TLS_NETWORK_TIMEOUT,
             network_max_retries=TLS_NETWORK_RETRIES,
         ),
-        scan_commands=set(commands),
+        scan_commands={command},
     )
-    scanner = Scanner(per_server_concurrent_connections_limit=5)
-    scanner.queue_scans([request])
-    return next(scanner.get_results())
 
 
-class _MergedAttempts:
-    """Résultats du 1er passage, complétés par ceux du retry quand ils ont abouti."""
+class _CollectedAttempts:
+    """Résultats des commandes terminées, lisibles par attribut comme un AllScanCommandsAttempts.
+    Une commande absente (non terminée à l'échéance) vaut None : indéterminé, jamais « refusé »."""
 
-    def __init__(self, first, retry):
-        self._first, self._retry = first, retry
+    def __init__(self):
+        self._attempts = {}
+
+    def add(self, scan_result):
+        for attr in vars(scan_result):
+            attempt = getattr(scan_result, attr)
+            status = getattr(attempt, "status", None)
+            if status is not None and status != ScanCommandAttemptStatusEnum.NOT_SCHEDULED:
+                self._attempts[attr] = attempt
+
+    def has_completed(self, attr):
+        return _completed(self._attempts.get(attr))
 
     def __getattr__(self, name):
-        if self._retry is not None:
-            attempt = getattr(self._retry, name, None)
-            if _completed(attempt):
-                return attempt
-        return getattr(self._first, name)
+        return self._attempts.get(name)
+
+
+def _collect(domain, ip, commands, timeout, into):
+    """Un scan sslyze par commande ; ajoute à `into` celles terminées avant `timeout` secondes.
+
+    Un scan par commande donne des résultats partiels exploitables à l'échéance, au lieu de tout
+    perdre quand le total dépasse le budget. Renvoie False si le serveur est injoignable."""
+    scanner = Scanner(per_server_concurrent_connections_limit=TLS_CONCURRENCY)
+    scanner.queue_scans([_request(domain, ip, c) for c in commands])
+    reachable = [True]
+
+    def consume():
+        for result in scanner.get_results():
+            if result.scan_status != ServerScanStatusEnum.COMPLETED:
+                reachable[0] = False
+                continue
+            into.add(result.scan_result)
+
+    worker = threading.Thread(target=consume, daemon=True, name=f"sslyze-{domain}")
+    worker.start()
+    worker.join(timeout)  # à l'échéance, le thread est abandonné (daemon) : son travail restant se termine seul
+    return reachable[0]
 
 
 def _log_failures(domain, attempts, tag):
@@ -158,30 +187,45 @@ def _log_failures(domain, attempts, tag):
                            getattr(attempt, "error_reason", "?"))
 
 
+def _port_443_open(ip):
+    """Évite de lancer sslyze sur un site sans HTTPS."""
+    try:
+        with socket.create_connection((ip, 443), timeout=TLS_CONNECT_PRECHECK):
+            return True
+    except OSError:
+        return False
+
+
 def _run_sslyze(domain, ip):
     started = time.monotonic()
-    commands = {c for _l, c, _a in _PROTOCOLS} | set(_VULN_COMMANDS)
-    result = _scan(domain, ip, commands)
-    if result.scan_status != ServerScanStatusEnum.COMPLETED:
+    if not _port_443_open(ip):
+        logger.info("sslyze %s : port 443 injoignable (%.1fs)", domain, time.monotonic() - started)
         return {"status": "unreachable", "details": []}
 
-    attempts = result.scan_result
-    _log_failures(domain, attempts, "1er passage")
-    # Un seul retry, limité aux protocoles porteurs de PFS (1.2/1.3) non aboutis : ce sont eux qui
+    commands = [c for _l, c, _a in _PROTOCOLS] + list(_VULN_COMMANDS)
+    attempts = _CollectedAttempts()
+    pass1_budget = TLS_SCAN_BUDGET - TLS_RETRY_WINDOW
+    _collect(domain, ip, commands, pass1_budget, attempts)
+    pass1 = time.monotonic() - started
+
+    # Un seul retry, ciblé sur les protocoles porteurs de PFS (1.2/1.3) non aboutis : ce sont eux qui
     # conditionnent la note. Un protocole legacy qui expire est le plus souvent simplement refusé.
-    failed = {c for label, c, a in _PROTOCOLS
-              if label in _PFS_PROTOCOLS and not _completed(getattr(attempts, a))}
-    if failed:
-        if time.monotonic() - started < TLS_RETRY_MAX_ELAPSED:
-            retry = _scan(domain, ip, failed)
-            if retry.scan_status == ServerScanStatusEnum.COMPLETED:
-                attempts = _MergedAttempts(attempts, retry.scan_result)
-                _log_failures(domain, retry.scan_result, "retry")
+    failed = [c for label, c, a in _PROTOCOLS
+              if label in _PFS_PROTOCOLS and not attempts.has_completed(a)]
+    _log_failures(domain, attempts, "1er passage")
+    if failed and pass1 < TLS_SCAN_BUDGET - 2:
+        _collect(domain, ip, failed, min(TLS_RETRY_WINDOW, TLS_SCAN_BUDGET - pass1), attempts)
+
+    done = [a for _l, _c, a in _PROTOCOLS if attempts.has_completed(a)]
+    logger.info("sslyze %s : %d/%d protocoles analysés en %.1fs", domain, len(done), len(_PROTOCOLS),
+                time.monotonic() - started)
+    if not done:  # aucun protocole mesuré : l'analyse approfondie est inexploitable
+        return {"status": "timeout", "details": []}
     return _evaluate(attempts)
 
 
 def analyze_tls_deep(domain):
-    """Analyse TLS de `domain`:443 ; ne lève jamais, renvoie toujours un dict."""
+    """Analyse TLS de `domain`:443 ; ne lève jamais, renvoie toujours un dict, borne dure en durée."""
     try:
         # Anti-SSRF : on scanne une IP publique résolue ici, jamais le nom (pas de rebinding).
         ip = next((i for i in _resolve_records(domain, "A") if _is_public_ip(i)), None)
@@ -191,7 +235,10 @@ def analyze_tls_deep(domain):
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(_run_sslyze, domain, ip)
         try:
-            return future.result(timeout=TLS_SCAN_TIMEOUT)
+            return future.result(timeout=TLS_SCAN_BUDGET + 4)  # filet de sécurité, _run_sslyze se borne seul
+        except FutureTimeout:
+            logger.warning("Analyse TLS approfondie abandonnée pour %s (> %ss)", domain, TLS_SCAN_BUDGET + 4)
+            return {"status": "timeout", "details": []}
         finally:
             executor.shutdown(wait=False)  # ne pas bloquer le scan sur un sslyze lent
     except Exception:  # un échec TLS ne doit jamais casser le scan
