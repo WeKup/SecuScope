@@ -105,12 +105,29 @@ def index():
         
     return render_template('index.html')
 
+HISTORY_LIMIT = 15
+
+def _score_history(audit):
+    """Scores des derniers scans du même domaine, dans la même session, jusqu'à `audit` inclus.
+    Ordre chronologique ; le dernier point est l'audit affiché."""
+    rows = (Audit.query
+            .filter(Audit.domain == audit.domain,
+                    Audit.session_id == audit.session_id,
+                    Audit.id <= audit.id)
+            .order_by(Audit.id.desc())
+            .limit(HISTORY_LIMIT)
+            .all())
+    return [
+        {'date': r.timestamp.strftime('%d.%m %H:%M') if r.timestamp else '', 'score': int(r.numeric_score or 0)}
+        for r in reversed(rows)
+    ]
+
 @bp.route('/dashboard/<int:audit_id>')
 def dashboard(audit_id):
     audit = Audit.query.get_or_404(audit_id)
     if audit.session_id != session.get('session_id'):
         abort(403)
-    return render_template('dashboard.html', audit=audit)
+    return render_template('dashboard.html', audit=audit, score_history=_score_history(audit))
 
 @bp.route('/logout')
 def logout():
