@@ -29,16 +29,26 @@
 {% set tls_unknown = (protocols.values()|select('none')|list|length) if tls_ok else 0 %}
 {% set axfr = dns_sec.get('axfr') if dns_sec.get('axfr') is mapping else {} %}
 {% set crit_failure = scan.get('critical_failure') is sameas true %}
+{# Cause de l'arrêt du scan : HTTP en clair, handshake TLS échoué ou certificat invalide (anciens audits : HTTP en clair) #}
+{% set failure_kind = scan.get('failure_kind') or 'http_clear' %}
+{% set failure_label = {'http_clear': 'HTTP en clair / HTTPS non forcé', 'tls_handshake': 'Handshake TLS échoué (protocole/cipher obsolète ou incompatible)', 'cert_invalid': 'Certificat TLS invalide'}.get(failure_kind, 'HTTP en clair / HTTPS non forcé') %}
+{% set failure_short = {'http_clear': 'HTTPS non forcé', 'tls_handshake': 'handshake TLS échoué', 'cert_invalid': 'certificat invalide'}.get(failure_kind, 'HTTPS non forcé') %}
+{% set failure_row = {'http_clear': 'Connexion HTTPS', 'tls_handshake': 'Handshake TLS', 'cert_invalid': 'Certificat'}.get(failure_kind, 'Connexion HTTPS') %}
+{% set cert_invalid = not ssl.get('valid') and ssl.get('error_type') == 'ssl_mismatch' %}
+{% set failure_key = {'http_clear': 'http', 'tls_handshake': 'handshake', 'cert_invalid': 'cert'}.get(failure_kind, 'http') %}
 
 {# --- Barème v2 : score_breakdown (absent des audits antérieurs à la refonte) --- #}
 {% set breakdown = scan.get('score_breakdown') %}
 {% set has_v2 = breakdown is mapping and breakdown.get('categories') is mapping %}
-{% set ns = namespace(weighted=0, critical=0, medium=0, low=0, cipher=none) %}
+{% set ns = namespace(weighted=0, wsum=0, critical=0, medium=0, low=0, cipher=none) %}
 {% set cat_rows = [] %}
 {% set cat_by_key = {} %}
 {% set ded_by_cat = {} %}
 {# Déductions déjà comptées comme CRITIQUES (faille plafonnante) : exclues du comptage moyen/faible #}
 {% set cap_labels = ['Certificat invalide, expiré ou ne correspond pas au domaine', 'SSLv2/SSLv3 accepté', 'Transfert de zone AXFR ouvert'] %}
+{% set weak_list = tls_deep.get('weak_ciphers') or [] %}
+{% set weak_list = [weak_list] if weak_list is string else weak_list %}
+{% set broken_list = weak_list|reject('equalto', '3DES')|list %}
 {% if has_v2 %}
     {% for key, cat in breakdown['categories'].items() if cat is mapping %}
         {% set deds = [] %}
@@ -46,17 +56,18 @@
         {% for d in (cat.get('deductions') or []) if d is mapping %}
             {% set pts = d.get('points')|int %}
             {% set lbl = d.get('label')|string %}
-            {% set dsev = 'critical' if lbl in cap_labels else ('medium' if pts >= 12 else 'low') %}
+            {% set dsev = 'critical' if (lbl in cap_labels or lbl.startswith('Cipher suite cassée')) else ('medium' if pts >= 12 else 'low') %}
             {% set _ = deds.append({'points': pts, 'label': lbl, 'sev': dsev}) %}
             {% set _ = lookup.update({lbl: pts}) %}
             {% if dsev == 'medium' %}{% set ns.medium = ns.medium + 1 %}
             {% elif dsev == 'low' and pts > 0 %}{% set ns.low = ns.low + 1 %}{% endif %}
         {% endfor %}
+        {% set cevaluated = cat.get('evaluated', true) %}
         {% set cscore = cat.get('score')|int %}
         {% set cweight = cat.get('weight')|int %}
-        {% set ns.weighted = ns.weighted + cscore * cweight / 100 %}
-        {% set ctone = 'pass' if cscore >= 80 else ('medium' if cscore >= 60 else ('high' if cscore >= 40 else 'critical')) %}
-        {% set crow = {'key': key, 'label': cat.get('label') or key, 'weight': cweight, 'score': cscore, 'tone': ctone,
+        {% if cevaluated %}{% set ns.weighted = ns.weighted + cscore * cweight %}{% set ns.wsum = ns.wsum + cweight %}{% endif %}
+        {% set ctone = 'neutral' if not cevaluated else 'pass' if cscore >= 80 else ('medium' if cscore >= 60 else ('high' if cscore >= 40 else 'critical')) %}
+        {% set crow = {'key': key, 'label': cat.get('label') or key, 'weight': cweight, 'score': cscore, 'evaluated': cevaluated, 'tone': ctone,
                        'deductions': deds|sort(attribute='points', reverse=true)} %}
         {% set _ = cat_rows.append(crow) %}
         {% set _ = cat_by_key.update({key: crow}) %}
@@ -75,12 +86,15 @@
        breakdown.cap n'est rempli que si le plafond < score calculé, on ne s'y fie donc pas seul. --- #}
 {% set critical_findings = [] %}
 {% if crit_failure %}
-    {% set _ = critical_findings.append({'key': 'http', 'label': 'HTTP en clair / HTTPS non forcé'}) %}
-{% elif not ssl.get('valid') %}
+    {% set _ = critical_findings.append({'key': failure_key, 'label': failure_label}) %}
+{% elif cert_invalid %}
     {% set _ = critical_findings.append({'key': 'cert', 'label': 'Certificat TLS invalide'}) %}
 {% endif %}
 {% if tls_ok and (protocols.get('SSLv2') or protocols.get('SSLv3')) %}
     {% set _ = critical_findings.append({'key': 'sslv', 'label': 'SSLv2/SSLv3 accepté'}) %}
+{% endif %}
+{% if tls_ok and broken_list %}
+    {% set _ = critical_findings.append({'key': 'cipher', 'label': 'Cipher suite cassée acceptée (' ~ broken_list|join(', ') ~ ')'}) %}
 {% endif %}
 {% if axfr.get('status') == 'vulnerable' %}
     {% set _ = critical_findings.append({'key': 'axfr', 'label': 'Transfert de zone AXFR ouvert'}) %}
@@ -107,9 +121,7 @@
     {% set imp = impacts.get(h) %}
     {% if 'Présent' in st or 'ACTIF' in st %}
         {% set row = {'label': 'Actif', 'tone': 'pass', 'group': 'active', 'rank': 4} %}
-    {% elif 'Masqué' in st or 'WAF' in st or 'Protégé' in st or 'Géré' in st %}
-        {% set row = {'label': 'Non observé' if has_v2 else 'Non observé (v1)', 'tone': 'neutral', 'group': 'unobserved', 'rank': 2} %}
-    {% elif 'Non vérifiable' in st or 'BLOQUÉ' in st %}
+    {% elif 'Non vérifiable' in st or 'BLOQUÉ' in st or 'Masqué' in st %}{# 'Masqué' : anciens audits, en-tête jamais lu #}
         {% set row = {'label': 'Non vérifiable', 'tone': 'neutral', 'group': 'unverifiable', 'rank': 3} %}
     {% elif has_v2 and imp is number and imp <= -12 %}
         {% set row = {'label': 'Manquant', 'tone': 'medium', 'group': 'missing-medium', 'rank': 0} %}
@@ -119,7 +131,7 @@
     {% set itone = none %}
     {% if imp is number and imp > 0 %}{% set itone = 'pass' %}
     {% elif imp is number and imp < 0 %}{% set itone = row.tone if row.group.startswith('missing') else ('medium' if imp <= -12 else 'low') %}{% endif %}
-    {% set _ = row.update({'name': h, 'raw': st|replace('✅', '')|replace('❌', '')|replace('🛡️', '')|replace('🛡', '')|trim,
+    {% set _ = row.update({'name': h, 'raw': st|replace('✅', '')|replace('❌', '')|replace('🛡️', '')|replace('🛡', '')|replace('⚪', '')|trim,
                            'impact': imp if itone else none, 'itone': itone}) %}
     {% set _ = header_rows.append(row) %}
 {% endfor %}
@@ -146,11 +158,13 @@
 {# --- TLS : une ligne par déduction possible du barème, triée par risque --- #}
 {% set tls_raw = [] %}
 {% if crit_failure %}
-    {% set _ = tls_raw.append(('Certificat', 'critical', 'Échec', 'Connexion HTTPS impossible ou non forcée', none)) %}
+    {% set _ = tls_raw.append((failure_row, 'critical', 'Échec', failure_label, none)) %}
 {% elif ssl.get('valid') %}
     {% set _ = tls_raw.append(('Certificat', 'pass', 'Valide', ssl.get('issuer') or '', none)) %}
-{% else %}
+{% elif cert_invalid %}
     {% set _ = tls_raw.append(('Certificat', 'critical', 'Invalide', 'Expiré, auto-signé ou nom non concordant', tls_ded.get(cap_labels[0]))) %}
+{% else %}
+    {% set _ = tls_raw.append(('Certificat', 'neutral', 'Non vérifié', 'La vérification du certificat n’a pas abouti', none)) %}
 {% endif %}
 {% if tls_ok %}
     {% set pstate = {true: 'accepté', false: 'refusé'} %}
@@ -205,14 +219,15 @@
 {% set tls_unavailable = {
     'unreachable': ('Injoignable', 'sslyze n’a pas pu joindre le port 443'),
     'skipped': ('Ignorée', 'Aucune IP publique résolue pour le domaine'),
-    'error': ('Erreur', 'Analyse sslyze en échec')
+    'error': ('Erreur', 'Analyse sslyze en échec'),
+    'timeout': ('Délai dépassé', 'Analyse sslyze abandonnée : le serveur a répondu trop lentement')
 } %}
 {% if not tls_ok %}
     {% if tls_deep.get('status')|string in tls_unavailable %}
         {% set u = tls_unavailable[tls_deep.get('status')|string] %}
         {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', u[0], u[1], none)) %}
     {% elif crit_failure %}
-        {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', 'Non exécutée', 'Scan interrompu : HTTPS non forcé', none)) %}
+        {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', 'Non exécutée', 'Scan interrompu : ' ~ failure_short, none)) %}
     {% else %}
         {% set _ = tls_raw.append(('Analyse approfondie', 'neutral', 'Non vérifié', 'Audit antérieur à l’analyse TLS approfondie', none)) %}
     {% endif %}
@@ -268,7 +283,7 @@
 {% set ai = audit.ai_report if audit.ai_report is mapping else {} %}
 {# Échec LLM (clé invalide, quota, JSON illisible) : le fallback du back pose un message d'erreur brut, jamais affiché tel quel #}
 {% set ai_failed_markers = ['Erreur IA', 'Pas de clé', 'Rapport IA généré sans résumé exploitable.'] %}
-{% set ai_ok = ai.get('executive') is string and ai.get('executive')|trim and ai.get('executive') not in ai_failed_markers
+{% set ai_ok = ai.get('ai_unavailable') is not sameas true and ai.get('executive') is string and ai.get('executive')|trim and ai.get('executive') not in ai_failed_markers
                and ai.get('technical') is sequence and ai.get('technical') is not string and ai.get('technical')|length > 0 %}
 {% set cap_gap = (raw_score - score) if cap and raw_score > score else 0 %}
 
@@ -303,7 +318,7 @@
 {% endfor %}
 {% for c in cookie_rows|sort(attribute='rank') %}{% set _ = cookie_items.append((c.name, 'ok' if c.secure else 'warn', 'Sécurisé' if c.secure else 'Exposé')) %}{% endfor %}
 {% set _ = infra_items.append(('WAF / CDN', 'ok' if waf_found else 'na', waf if waf_found else 'Non détecté')) %}
-{% set _ = infra_items.append(('Certificat', 'ok' if ssl.get('valid') else 'vuln', 'Valide' if ssl.get('valid') else 'Invalide')) %}
+{% set _ = infra_items.append(('Certificat', 'ok' if ssl.get('valid') else ('vuln' if cert_invalid else 'na'), 'Valide' if ssl.get('valid') else ('Invalide' if cert_invalid else 'Non vérifié'))) %}
 {% set matrix = [('TLS / SSL', tls_items), ('DNS', dns_items), ('En-têtes', hdr_items), ('Cookies', cookie_items), ('Infra', infra_items)] %}
 {% set mc = namespace(vuln=0, warn=0, total=0) %}
 {% for label, items in matrix %}{% for n, st, t in items %}
@@ -313,8 +328,8 @@
 
 {# --- À corriger : risques réels, du plus grave au plus léger --- #}
 {% set finds = [] %}
-{% if crit_failure %}{% set _ = finds.append({'tone': 'critical', 'title': 'HTTPS non forcé', 'detail': 'Le site répond en clair : le scan s’est arrêté et la note est plafonnée.', 'tag': 'tls · plafond', 'key': 0}) %}{% endif %}
-{% for r in tls_rows if r.tone in ['critical', 'high', 'medium', 'low'] %}
+{% if crit_failure %}{% set _ = finds.append({'tone': 'critical', 'title': failure_label, 'detail': ('Le site répond en clair : le scan s’est arrêté et la note est plafonnée.' if failure_kind == 'http_clear' else 'Le scan s’est arrêté : la note est plafonnée.'), 'tag': 'tls · plafond', 'key': 0}) %}{% endif %}
+{% for r in tls_rows if r.tone in ['critical', 'high', 'medium', 'low'] and not (crit_failure and r.label == 'Échec') %}
     {% set _ = finds.append({'tone': r.tone, 'title': r.name ~ ' : ' ~ r.label|lower, 'detail': r.detail, 'tag': 'tls' ~ (' · −' ~ r.impact if r.impact else ''), 'key': tone_rank[r.tone] * 1000 - (r.impact or 0)}) %}
 {% endfor %}
 {% for r in dns_rows if r.tone in ['critical', 'high', 'medium', 'low'] %}
@@ -366,7 +381,7 @@
                     <small>Score calculé avant plafond : {{ raw_score }}/100. Une faille grave ne se compense pas par les autres catégories.</small>
                     {% else %}
                     Faille{{ 's' if critical_findings|length > 1 }} critique{{ 's' if critical_findings|length > 1 }} : {{ critical_findings|map(attribute='label')|join(' ; ') }}.
-                    {% if has_v2 %}<small>Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.</small>{% endif %}
+                    {% if has_v2 %}<small>{% if ns.wsum %}Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.{% else %}Aucune catégorie n'a pu être mesurée : la note est fixée par ce plafond ({{ score }}/100).{% endif %}</small>{% endif %}
                     {% endif %}
                 </div>
             </div>
@@ -398,10 +413,16 @@
     <div class="eyebrow" id="categoriesTitle">Notes par catégorie · moyenne pondérée</div>
     <div class="cats">
         {% for c in cat_rows|sort(attribute='weight', reverse=true) %}
-        {% set cg = 'a' if c.score >= 90 else ('b' if c.score >= 80 else ('c' if c.score >= 60 else ('d' if c.score >= 40 else 'f'))) %}
+        {% set cg = 'x' if not c.evaluated else 'a' if c.score >= 90 else ('b' if c.score >= 80 else ('c' if c.score >= 60 else ('d' if c.score >= 40 else 'f'))) %}
         <div class="glass spot cat g-{{ cg }} rise" style="animation-delay:{{ '%.2f'|format(0.18 + loop.index0 * 0.06) }}s">
             <div class="bar-top"></div>
             <div class="top"><span class="nm">{{ c.label }}</span><span class="w">{{ c.weight }}%</span></div>
+            {% if not c.evaluated %}
+            <div class="sc">—<small> <span class="sr-only">non évalué</span></small></div>
+            <div class="mbar" aria-hidden="true"></div>
+            <div class="ded"><span>Non évalué</span><b>—</b></div>
+            <p class="note">{% if crit_failure %}Scan interrompu ({{ failure_short }}) : cette catégorie n'a pas été mesurée.{% elif scan.get('http_readable') is sameas false %}Réponse HTTPS non lue : contrôle non vérifiable, exclu de la moyenne.{% else %}Contrôle non exécuté pour cet audit : exclu de la moyenne.{% endif %}</p>
+            {% else %}
             <div class="sc">{{ c.score }}<small><span aria-hidden="true">/100</span><span class="sr-only"> sur 100</span></small></div>
             <div class="mbar" aria-hidden="true"><i style="width:{{ c.score }}%"></i></div>
             {% for d in c.deductions[:2] %}<div class="ded"><span>{{ d.label }}</span><b>−{{ d.points }}</b></div>{% endfor %}
@@ -410,13 +431,18 @@
             {% elif c.key == 'tls' and not tls_ok %}<p class="note">Analyse approfondie indisponible : seul le certificat est noté.</p>
             {% elif c.key == 'tls' and tls_unknown %}<p class="note partial"><b>Analyse TLS partielle</b> : {{ tls_unknown }} protocole{{ 's' if tls_unknown > 1 }} non vérifié{{ 's' if tls_unknown > 1 }}, aucune déduction pour {{ 'ces contrôles' if tls_unknown > 1 else 'ce contrôle' }}.</p>
             {% elif c.key == 'cookies' and not cookie_rows %}<p class="note">Aucun cookie posé : rien à risque.</p>{% endif %}
+            {% endif %}
         </div>
         {% endfor %}
     </div>
     <div class="formula">
-        <span>Σ note × poids <b>{{ '%.1f'|format(ns.weighted) }}</b></span>
+        {% if ns.wsum %}
+        <span>moyenne pondérée <b>{{ '%.1f'|format(ns.weighted / ns.wsum) }}</b>{% if ns.wsum < 100 %} (sur {{ ns.wsum }}% évalués){% endif %}</span>
         <span>bonus infra <b>+{{ infra_bonus }}</b></span>
         <span>score calculé <b>{{ raw_score }}</b></span>
+        {% else %}
+        <span>aucune catégorie évaluée : la note est celle du plafond</span>
+        {% endif %}
         {% if cap_gap %}<span>plafond <b>{{ cap.get('max', score) }} ({{ cap.get('grade', '?') }})</b></span>{% endif %}
         <span>final <b>{{ score }}/100</b></span>
     </div>
@@ -428,9 +454,9 @@
     <div class="glass spot infra rise" style="animation-delay:.38s">
         <h2>Infrastructure</h2>
         <dl>
-            <div><dt>Protection</dt><dd>{% if waf_found %}{{ waf }}{% else %}Non détectée{% endif %}</dd></div>
+            <div><dt>Protection</dt><dd>{% if waf_found %}{{ waf }}{% set no_bonus = scan.get('waf_layers', [])|rejectattr('protective')|map(attribute='name')|list %}{% if no_bonus %} <small style="color:var(--faint)">({{ no_bonus|join(', ') }} : sans bonus)</small>{% endif %}{% else %}Non détectée{% endif %}</dd></div>
             <div><dt>Serveur</dt><dd title="{{ scan.get('server', '') }}">{{ scan.get('server', '—') }}</dd></div>
-            <div><dt>Certificat TLS</dt><dd>{% if ssl.get('valid') %}Valide{% else %}Invalide{% endif %}</dd></div>
+            <div><dt>Certificat TLS</dt><dd>{% if ssl.get('valid') %}Valide{% elif cert_invalid %}Invalide{% else %}Non vérifié{% endif %}</dd></div>
             <div><dt>Émetteur</dt><dd title="{{ ssl.get('issuer', '') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd></div>
             {% if ssl.get('expiry') and ssl.get('expiry') != 'N/A' %}<div><dt>Expiration</dt><dd>{{ ssl.get('expiry') }}</dd></div>{% endif %}
         </dl>
@@ -523,45 +549,45 @@
 <section>
     <div class="cols">
         {% set tcat = cat_by_key.get('tls') %}
-        <div class="glass spot panel rise" style="animation-delay:.60s">
-            <div class="ph"><h2>TLS / SSL</h2>{% if tcat %}<span class="sc">{{ tcat.score }}/100 · poids {{ tcat.weight }}%{% if tls_unknown %} · <span class="partial">partielle</span>{% endif %}</span>{% endif %}</div>
+        <div class="glass spot panel rise" style="animation-delay:0.60s">
+            <div class="ph"><h2>TLS / SSL</h2>{% if tcat and tcat.evaluated %}<span class="sc">{{ tcat.score }}/100 · poids {{ tcat.weight }}%{% if tls_unknown %} · <span class="partial">partielle</span>{% endif %}</span>{% endif %}</div>
             {% for r in tls_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
         </div>
 
+        <div class="glass spot panel rise" style="animation-delay:0.66s">
+            <div class="ph"><h2>Cookies</h2><span class="sc">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span></div>
+            {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
+            {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
+            {% if not cookie_rows and not cookie_notes %}<p class="empty empty-row">{% if scan.get('http_readable') is sameas false or crit_failure %}Cookies non vérifiables : réponse HTTPS non lue.{% else %}Aucun cookie détecté.{% endif %}</p>{% endif %}
+        </div>
+
         {% set dcat = cat_by_key.get('dns') %}
-        <div class="glass spot panel rise" style="animation-delay:.66s">
+        <div class="glass spot panel rise" style="animation-delay:0.72s">
             <div class="ph"><h2>DNS &amp; messagerie</h2>
-                {% if dns_rows and dcat %}<span class="sc">{{ dcat.score }}/100 · poids {{ dcat.weight }}%</span>
+                {% if dns_rows and dcat and dcat.evaluated %}<span class="sc">{{ dcat.score }}/100 · poids {{ dcat.weight }}%</span>
                 {% elif not dns_rows %}<span class="pill">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
             </div>
             {% if dns_rows %}
                 {% for r in dns_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
             {% else %}
             <p class="empty empty-row">
-                {% if crit_failure %}Scan interrompu (HTTPS non forcé) : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR non contrôlés.
+                {% if crit_failure %}Scan interrompu ({{ failure_short }}) : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR non contrôlés.
                 {% else %}Audit antérieur aux contrôles SPF, DMARC, DKIM, DNSSEC, CAA et AXFR. Relancez un scan pour les obtenir.{% endif %}
             </p>
             {% endif %}
         </div>
 
-        <div class="glass spot panel rise" style="animation-delay:.72s">
+        <div class="glass spot panel rise" style="animation-delay:0.78s">
             <div class="ph"><h2>En-têtes de sécurité</h2><span class="sc">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span></div>
             {% for r in header_rows|sort(attribute='rank') %}
                 {{ check_line(r.name, r.tone, r.label, '' if r.group == 'active' else r.raw, (r.impact|abs) if r.impact is number and r.impact < 0 else none) }}
             {% else %}
-            <p class="empty empty-row">Aucun en-tête analysé{% if crit_failure %} : scan interrompu (HTTPS non forcé){% endif %}.</p>
+            <p class="empty empty-row">Aucun en-tête analysé{% if crit_failure %} : scan interrompu ({{ failure_short }}){% endif %}.</p>
             {% endfor %}
         </div>
 
-        <div class="glass spot panel rise" style="animation-delay:.78s">
-            <div class="ph"><h2>Cookies</h2><span class="sc">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span></div>
-            {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
-            {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
-            {% if not cookie_rows and not cookie_notes %}<p class="empty empty-row">Aucun cookie détecté.</p>{% endif %}
-        </div>
-
         {% if not has_v2 %}
-        <div class="glass spot panel rise" style="animation-delay:.84s">
+        <div class="glass spot panel rise" style="animation-delay:0.84s">
             <div class="ph"><h2>Calcul du score</h2><span class="sc">barème v1 · base 50</span></div>
             {% for detail_raw in (scan.get('score_details') or []) %}
                 {% set detail = detail_raw|string %}
@@ -599,9 +625,9 @@
     {% set scale = [
         ('A', 'Configuration solide sur les quatre catégories, aucune faille plafonnante.'),
         ('B', 'Bonne base ; quelques déductions modérées dans une ou deux catégories.'),
-        ('C', 'Lacunes notables, ou plafond C : SSLv2/SSLv3 accepté, transfert de zone AXFR ouvert.'),
+        ('C', 'Lacunes notables, ou plafond C : SSLv2/SSLv3 accepté, cipher suite cassée acceptée, transfert de zone AXFR ouvert.'),
         ('D', 'Protections partielles, ou plafond D : certificat TLS invalide.'),
-        ('F', 'Défaillances majeures, ou plafond F : HTTP en clair / HTTPS non forcé.')
+        ('F', 'Défaillances majeures, ou plafond F : HTTP en clair, HTTPS non forcé ou handshake TLS échoué.')
     ] %}
     {% else %}
     {% set scale = [
@@ -629,7 +655,7 @@
 
     <h3>Plafonds (faille critique)</h3>
     <table>
-        {% for ckey, clabel, cmax, cgrade in [('http', 'HTTP en clair / HTTPS non forcé', 20, 'F'), ('cert', 'Certificat TLS invalide', 59, 'D'), ('sslv', 'SSLv2/SSLv3 accepté', 79, 'C'), ('axfr', 'Transfert de zone AXFR ouvert', 79, 'C')] %}
+        {% for ckey, clabel, cmax, cgrade in [('http', 'HTTP en clair / HTTPS non forcé', 20, 'F'), ('handshake', 'Handshake TLS échoué (protocole/cipher obsolète ou incompatible)', 20, 'F'), ('cert', 'Certificat TLS invalide', 59, 'D'), ('sslv', 'SSLv2/SSLv3 accepté', 79, 'C'), ('cipher', 'Cipher suite cassée acceptée (RC4, DES, EXPORT, NULL, MD5, anonyme)', 79, 'C'), ('axfr', 'Transfert de zone AXFR ouvert', 79, 'C')] %}
         {% set hit = ckey in critical_keys %}
         <tr {% if hit %}aria-current="true"{% endif %}><td{% if hit %} style="color:#f8a7a0"{% endif %}>{{ clabel }}{% if hit %} · ce site{% endif %}</td><td>≤ {{ cmax }} ({{ cgrade }})</td></tr>
         {% endfor %}

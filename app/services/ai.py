@@ -3,16 +3,21 @@ import logging
 import json
 import time
 
+from app.services.scoring import deduction_severity, failure_label
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_RISKS = {"mitm": 0, "xss": 0, "clickjacking": 0, "sniffing": 0, "waf": 0}
 
 
-def _fallback_report(message):
+def _fallback_report(reason):
+    """Rapport vide marqué indisponible. La raison est loguée, jamais stockée ni affichée."""
+    logger.error("Rapport IA indisponible : %s", reason)
     return {
-        "executive": "Erreur IA",
-        "technical": [message],
+        "executive": "",
+        "technical": [],
         "risks": DEFAULT_RISKS.copy(),
+        "ai_unavailable": True,
     }
 
 
@@ -30,14 +35,14 @@ def _extract_json_object(text):
 
 def _normalize_report(data):
     if not isinstance(data, dict):
-        return _fallback_report("Réponse IA invalide")
+        return _fallback_report("Réponse IA invalide (JSON non objet)")
 
     executive = data.get("executive")
     technical = data.get("technical")
     risks = data.get("risks")
 
     if not isinstance(executive, str) or not executive.strip():
-        executive = "Rapport IA généré sans résumé exploitable."
+        return _fallback_report("Réponse IA sans résumé exploitable")
 
     if isinstance(technical, str):
         technical = [technical]
@@ -130,34 +135,100 @@ def _format_dns_security(dns_sec):
     return "\n".join(lines)
 
 
-def generate_report(scan_data, api_key, model_id):
-    if not api_key:
-        return {"executive": "Pas de clé", "technical": [], "risks": DEFAULT_RISKS.copy()}
-    try:
-        client = genai.Client(api_key=api_key)
-        dns_summary = _format_dns_security(scan_data.get('dns_security', {}))
+def _severity_summary(scan_data):
+    """Classement critique / moyenne / faible, identique à celui affiché par le dashboard.
 
-        prompt = f"""
+    Sert à imposer au LLM le vocabulaire de SecuScope : « critique » = faille plafonnante."""
+    breakdown = scan_data.get("score_breakdown")
+    categories = breakdown.get("categories") if isinstance(breakdown, dict) else None
+    buckets = {"critical": [], "medium": [], "low": []}
+    if scan_data.get("critical_failure"):
+        buckets["critical"].append(failure_label(scan_data))
+    if isinstance(categories, dict):
+        for cat in categories.values():
+            for ded in (cat.get("deductions") or []) if isinstance(cat, dict) else []:
+                label, points = str(ded.get("label")), int(ded.get("points") or 0)
+                buckets[deduction_severity(label, points)].append(f"{label} (−{points})")
+
+    def fmt(items):
+        return " ; ".join(items) if items else "aucune"
+
+    lines = [
+        f"- Grade : {scan_data.get('score', '?')} ({scan_data.get('numeric_score', 'N/A')}/100)",
+        f"- CRITIQUES ({len(buckets['critical'])}), failles plafonnantes : {fmt(buckets['critical'])}",
+        f"- MOYENNES ({len(buckets['medium'])}) : {fmt(buckets['medium'])}",
+        f"- FAIBLES ({len(buckets['low'])}) : {fmt(buckets['low'])}",
+    ]
+    return "\n".join(lines)
+
+
+def _format_http(scan_data):
+    """En-têtes et cookies pour le prompt ; « non analysés » quand la réponse HTTPS n'a pas été lue."""
+    if scan_data.get("critical_failure") or scan_data.get("http_readable") is False:
+        return ("- En-têtes de sécurité et cookies : NON ANALYSÉS (réponse HTTPS non lue ou scan interrompu). "
+                "Ne conclus rien sur leur présence ou leur absence.")
+    present = [k for k, v in scan_data.get("headers", {}).items() if "✅" in str(v)]
+    lines = [
+        f"- Headers présents : {present}",
+        f"- Headers manquants : {scan_data.get('missing_headers', [])}",
+        "  (réellement absents de la réponse HTTP ; un CDN/WAF n'implique aucune protection de leur part, "
+        "recommande de les ajouter)",
+        f"- Cookies : {scan_data.get('cookies_security', [])}",
+    ]
+    return "\n".join(lines)
+
+
+def _format_waf(scan_data):
+    """Couches WAF/CDN pour le prompt : le multi-couches est signalé, un cache n'est pas une protection."""
+    layers = scan_data.get("waf_layers")
+    if not isinstance(layers, list) or not layers:
+        return f"- WAF/CDN : {scan_data.get('waf_detected', 'Non détecté')}"
+    real = [l["name"] for l in layers if isinstance(l, dict) and l.get("protective")]
+    other = [l["name"] for l in layers if isinstance(l, dict) and not l.get("protective")]
+    line = f"- WAF/CDN : {len(real)} couche(s) protectrice(s) distincte(s) : {' + '.join(real) or 'aucune'}"
+    if other:
+        line += f" ; détecté mais sans être une protection (cache, routeur) : {', '.join(other)}"
+    if len(real) > 1:
+        line += ". Plusieurs couches de protection : mentionne-le, ne parle pas d'un seul WAF."
+    return line
+
+
+def _build_prompt(scan_data):
+    waf_line = _format_waf(scan_data)
+    http_lines = _format_http(scan_data)
+    dns_summary = _format_dns_security(scan_data.get('dns_security', {}))
+    severity = _severity_summary(scan_data)
+    return f"""
 Tu es un expert en cybersécurité (Audit Black Box).
 Analyse ce domaine : {scan_data['domain']}
 
 Données collectées :
 - Score actuel : {scan_data.get('numeric_score', 'N/A')}/100
 - SSL Issuer : {scan_data['ssl'].get('issuer')}
-- WAF détecté : {scan_data['waf_detected']}
+{waf_line}
 - Serveur : {scan_data.get('server')}
 - Stack technique : {scan_data.get('tech_stack', [])}
-- Headers présents : {[k for k,v in scan_data.get('headers', {}).items() if '✅' in str(v)]}
-- Headers manquants : {scan_data['missing_headers']}
-  (réellement absents de la réponse HTTP ; un CDN/WAF n'implique aucune protection de leur part, recommande de les ajouter)
-- Cookies : {scan_data.get('cookies_security', [])}
+{http_lines}
 
 Sécurité DNS / e-mail :
 {dns_summary}
 
-CONSIGNE : tiens compte des failles DNS ci-dessus dans "executive" et "technical". Une faille
-marquée CRITIQUE (ex. AXFR ouvert) doit apparaître comme point critique : ne qualifie pas le
-site de robuste dans ce cas. Ne déduis rien d'un contrôle « non vérifié » ou « non disponible ».
+Classement de sévérité SecuScope (c'est la référence, à reprendre tel quel) :
+{severity}
+
+VOCABULAIRE DE SÉVÉRITÉ (obligatoire) : utilise « critique », « moyenne » et « faible » exactement
+comme classés ci-dessus, jamais ta propre échelle.
+- « Critique » est réservé aux failles de la ligne CRITIQUES (faille plafonnante : HTTP en clair,
+  handshake TLS échoué, certificat invalide, SSLv2/SSLv3 accepté, AXFR ouvert, cipher cassé).
+- DNSSEC absent, CAA absent, en-têtes manquants, SPF en ~all, cookies sans attribut : « moyenne »
+  ou « faible » selon le classement, JAMAIS « critique », « grave », « majeure » ni
+  « vulnérabilité critique ».
+- Si la ligne CRITIQUES indique « aucune », n'emploie pas le mot « critique » ; sinon, une faille
+  critique doit apparaître comme telle et le site ne doit pas être qualifié de robuste.
+- Reste cohérent avec le grade et avec les nombres ci-dessus : n'invente ni grade ni comptage.
+
+CONSIGNE : tiens compte des failles DNS ci-dessus dans "executive" et "technical".
+Ne déduis rien d'un contrôle « non vérifié » ou « non disponible ».
 
 TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/après) avec 3 clés :
 1. "executive": Résumé dirigeant (2 phrases, ton professionnel).
@@ -169,8 +240,14 @@ TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/a
    - "sniffing": (basé sur X-Content-Type-Options)
    - "waf": (basé sur WAF détecté + infrastructure)
 """
-        
 
+
+def generate_report(scan_data, api_key, model_id):
+    if not api_key:
+        return _fallback_report("Aucune clé API Gemini (GOOGLE_API_KEY absente et pas de clé de session)")
+    try:
+        client = genai.Client(api_key=api_key)
+        prompt = _build_prompt(scan_data)
 
         for attempt in range(3):
             try:
@@ -183,5 +260,4 @@ TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/a
                 raise e
         return _normalize_report(_extract_json_object(response.text))
     except Exception as e:
-        logger.error(f"Erreur GenAI ({model_id}) : {e}")
-        return _fallback_report(str(e))
+        return _fallback_report(f"erreur GenAI ({model_id}) : {e}")

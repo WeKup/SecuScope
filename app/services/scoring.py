@@ -6,6 +6,8 @@ timeout, clé absente) ne déduit rien : on ne punit pas ce qu'on n'a pas vu.
 """
 import re
 
+from app.services.signature import NON_PROTECTIVE_LAYERS
+
 WEIGHTS = {"tls": 35, "headers": 25, "dns": 25, "cookies": 15}
 CATEGORY_LABELS = {"tls": "TLS/SSL", "headers": "En-têtes HTTP", "dns": "DNS", "cookies": "Cookies"}
 
@@ -15,6 +17,7 @@ INFRA_BONUS_MAX = 10
 CAP_HTTP_CLEAR = 20
 CAP_BAD_CERT = 59
 CAP_LEGACY_SSL = 79
+CAP_BROKEN_CIPHER = 79
 CAP_AXFR = 79
 
 # Clés = noms d'affichage de SECURITY_HEADERS (signature.py). Total = 100.
@@ -33,20 +36,67 @@ LEGACY_CIPHERS = {"3DES"}
 COOKIE_WEIGHTS = {"secure": 0.4, "httponly": 0.4, "samesite": 0.2}
 
 
-def _category(key, deductions):
-    """deductions : liste de (points, libellé). Retourne le bloc d'une catégorie."""
+# Cause d'un arrêt anticipé du scan (clé `failure_kind` de scan_data). Par défaut (anciens audits) : HTTP en clair.
+FAILURE_LABELS = {
+    "http_clear": "HTTP en clair / HTTPS non forcé",
+    "tls_handshake": "Handshake TLS échoué (protocole/cipher obsolète ou incompatible)",
+    "cert_invalid": "Certificat TLS invalide",
+}
+
+
+def failure_label(scan):
+    return FAILURE_LABELS.get(scan.get("failure_kind"), FAILURE_LABELS["http_clear"])
+
+
+
+# Déductions qui correspondent à une faille plafonnante = sévérité « critique ».
+CAPPING_LABELS = {
+    "Certificat invalide, expiré ou ne correspond pas au domaine",
+    "SSLv2/SSLv3 accepté",
+    "Transfert de zone AXFR ouvert",
+}
+CAPPING_LABEL_PREFIXES = ("Cipher suite cassée",)
+MEDIUM_MIN_POINTS = 12  # déduction ≥ 12 pts = moyenne, en dessous = faible
+
+
+def deduction_severity(label, points):
+    """Sévérité SecuScope d'une déduction : 'critical' (plafonnante), 'medium' ou 'low'.
+
+    Même règle que les compteurs du dashboard (templates/dashboard.html)."""
+    if label in CAPPING_LABELS or str(label).startswith(CAPPING_LABEL_PREFIXES):
+        return "critical"
+    return "medium" if points >= MEDIUM_MIN_POINTS else "low"
+
+
+def _category(key, deductions, evaluated=True):
+    """deductions : liste de (points, libellé). Retourne le bloc d'une catégorie.
+
+    `evaluated=False` : la catégorie n'a pas pu être mesurée (scan interrompu, contrôle absent).
+    Elle n'a alors ni note ni poids dans la moyenne : jamais un faux 100.
+    """
+    block = {"label": CATEGORY_LABELS[key], "weight": WEIGHTS[key], "evaluated": evaluated}
+    if not evaluated:
+        return {**block, "score": None, "deductions": []}
     total = sum(points for points, _label in deductions)
     return {
-        "label": CATEGORY_LABELS[key],
-        "weight": WEIGHTS[key],
+        **block,
         "score": max(0, round(100 - total)),
         "deductions": [{"points": round(p), "label": label} for p, label in deductions],
     }
 
 
 def _score_tls(scan, caps):
+    if scan.get("critical_failure"):  # connexion HTTPS jamais établie : rien n'a été mesuré
+        return _category("tls", [], evaluated=False)
     deductions = []
-    if not scan.get("critical_failure") and not scan.get("ssl", {}).get("valid"):
+    ssl_info = scan.get("ssl", {})
+    # Ni verdict sur le certificat ni analyse approfondie aboutie : rien n'a été mesuré, pas de faux 100.
+    cert_known = ssl_info.get("valid") or ssl_info.get("error_type") == "ssl_mismatch"
+    if not cert_known and (scan.get("tls_deep") or {}).get("status") != "ok":
+        return _category("tls", [], evaluated=False)
+    # Seule une vraie erreur de certificat déduit : un handshake ou un test qui échoue (timeout, cipher
+    # incompatible) n'est pas la preuve d'un certificat invalide.
+    if not ssl_info.get("valid") and ssl_info.get("error_type") == "ssl_mismatch":
         deductions.append((40, "Certificat invalide, expiré ou ne correspond pas au domaine"))
         caps.append((CAP_BAD_CERT, "certificat TLS invalide"))
 
@@ -65,6 +115,7 @@ def _score_tls(scan, caps):
     broken = [c for c in weak if c not in LEGACY_CIPHERS]
     if broken:
         deductions.append((25, "Cipher suite cassée (" + ", ".join(broken) + ")"))
+        caps.append((CAP_BROKEN_CIPHER, "cipher suite cassée acceptée (" + ", ".join(broken) + ")"))
     elif weak:
         deductions.append((15, "Cipher suite legacy (" + ", ".join(weak) + ")"))
     if deep.get("forward_secrecy") is False:
@@ -77,16 +128,22 @@ def _score_tls(scan, caps):
 def _score_headers(scan):
     """Présent = observé dans la réponse HTTP, quel que soit qui pose l'en-tête."""
     statuses = scan.get("headers") or {}
+    # Seuls « Présent » et « Manquant » sont des observations ; « Non vérifiable » ne déduit rien.
+    observed = {n: str(v) for n, v in statuses.items() if "Présent" in str(v) or "Manquant" in str(v)}
+    if not observed:  # aucun en-tête réellement lu : on ne déduit pas ce qu'on n'a pas vu
+        return _category("headers", [], evaluated=False)
     deductions = [
         (points, name)
         for name, points in HEADER_DEDUCTIONS.items()
-        if "Présent" not in str(statuses.get(name, ""))
+        if name in observed and "Présent" not in observed[name]
     ]
     return _category("headers", deductions)
 
 
 def _score_dns(scan, caps):
     dns_sec = scan.get("dns_security") or {}
+    if not dns_sec:  # contrôles DNS non exécutés (scan interrompu, audit ancien)
+        return _category("dns", [], evaluated=False)
 
     def status(key):
         info = dns_sec.get(key)
@@ -124,6 +181,8 @@ def _parse_cookie(line):
 
 
 def _score_cookies(scan):
+    if scan.get("critical_failure") or scan.get("http_readable") is False:  # cookies jamais observés
+        return _category("cookies", [], evaluated=False)
     cookies = [c for c in (scan.get("cookies_security") or []) if ": " in c]
     if not cookies:
         return _category("cookies", [])  # aucun cookie : rien à risque, 100
@@ -144,11 +203,16 @@ def _score_cookies(scan):
 
 
 def _infra_bonus(scan):
-    waf = str(scan.get("waf_detected") or "")
-    if not waf or "Non détecté" in waf:
-        return 0
-    layers = [p for p in re.split(r"\s*(?:,|\+|&|;)\s*", waf) if p]
-    return min(INFRA_BONUS_PER_LAYER * len(layers), INFRA_BONUS_MAX)
+    """+5 par couche WAF/CDN distincte et réelle, plafonné à +10. Cache, routeur de plateforme et
+    répartiteur de charge sont affichés mais ne comptent pas, même à côté d'un vrai WAF."""
+    layers = scan.get("waf_layers")
+    if isinstance(layers, list):
+        names = {l.get("name") for l in layers if isinstance(l, dict) and l.get("protective")}
+    else:  # anciens audits : chaîne « A + B »
+        waf = str(scan.get("waf_detected") or "")
+        names = {p for p in re.split(r"\s*(?:,|\+|&|;)\s*", waf) if p and "Non détecté" not in p}
+    names -= NON_PROTECTIVE_LAYERS
+    return min(INFRA_BONUS_PER_LAYER * len(names), INFRA_BONUS_MAX)
 
 
 def _grade(score):
@@ -167,6 +231,9 @@ def _legacy_details(categories, bonus, cap):
     """Représentation dégradée pour l'ancien dashboard : lignes '-N pts: libellé'."""
     lines = []
     for key, cat in categories.items():
+        if not cat.get("evaluated", True):
+            lines.append(f"Note {cat['label']}: non évaluée (poids {cat['weight']}%)")
+            continue
         lines.append(f"Note {cat['label']}: {cat['score']}/100 (poids {cat['weight']}%)")
         # Les en-têtes gardent leur nom court (HSTS, CSP...) : le dashboard s'en sert comme clé.
         lines.extend(f"-{d['points']} pts: {d['label']}" for d in cat["deductions"])
@@ -181,7 +248,7 @@ def calculate_trust_score(scan_results):
     """Retourne numeric, letter, le détail par catégorie et une vue dégradée (details)."""
     caps = []
     if scan_results.get("critical_failure"):
-        caps.append((CAP_HTTP_CLEAR, "HTTP en clair, HTTPS non forcé ou connexion TLS impossible"))
+        caps.append((CAP_HTTP_CLEAR, failure_label(scan_results)))
 
     categories = {
         "tls": _score_tls(scan_results, caps),
@@ -190,9 +257,15 @@ def calculate_trust_score(scan_results):
         "cookies": _score_cookies(scan_results),
     }
 
-    weighted = sum(c["score"] * c["weight"] for c in categories.values()) / 100
-    bonus = _infra_bonus(scan_results)
-    raw_score = min(100, round(weighted + bonus))
+    # Moyenne pondérée sur les catégories évaluées seulement (poids renormalisés).
+    measured = [c for c in categories.values() if c["evaluated"]]
+    total_weight = sum(c["weight"] for c in measured)
+    bonus = _infra_bonus(scan_results) if measured else 0
+    if total_weight:
+        weighted = sum(c["score"] * c["weight"] for c in measured) / total_weight
+        raw_score = min(100, round(weighted + bonus))
+    else:  # rien n'a été mesuré : le verdict est celui du plafond seul
+        raw_score = min((c[0] for c in caps), default=0)
 
     cap = None
     score = raw_score
