@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 
-{% block head %}
-<!-- Chart.js for security visualizers -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% block title %}{{ audit.domain }} · {{ audit.score or '?' }} — SecuScope{% endblock %}
+
+{% block header_target %}
+{% set hg = (audit.score or 'x')|lower %}
+<div class="hsearch g-{{ hg if hg in ['a', 'b', 'c', 'd', 'f'] else 'x' }}"><span class="dot"></span>cible <b>{{ audit.domain }}</b></div>
 {% endblock %}
 
 {% block content %}
-{% from "components/check_row.html" import check_row %}
 {# ============================================================================
    DONNÉES D'AFFICHAGE — lecture seule de scan_data, toujours via .get :
    les anciens audits n'ont ni score_breakdown, ni dns_security, ni tls_deep.
@@ -15,10 +16,6 @@
 {% set score = scan.get('numeric_score', audit.numeric_score)|int %}
 {% set grade = audit.score or '?' %}
 {# Grade = niveau de risque : A/B conforme (pass), puis sévérités. L'indigo reste la chrome. #}
-{% set grade_tones = {'A': 'pass', 'B': 'pass', 'C': 'medium', 'D': 'high', 'F': 'critical'} %}
-{% set tone = grade_tones.get(grade, 'neutral') %}
-{% set fill = {'pass': 'bg-pass', 'medium': 'bg-medium', 'high': 'bg-high', 'critical': 'bg-critical'}.get(tone, 'bg-fg-subtle') %}
-{% set score_color = 'text-pass-fg' if tone == 'pass' else 'text-fg' %}
 {% set grade_ranges = {'A': '≥ 90', 'B': '80–89', 'C': '60–79', 'D': '40–59', 'F': '< 40'} %}
 {# Table statut -> token : ordre de tri des lignes, risque d'abord #}
 {% set tone_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'neutral': 4, 'info': 5, 'pass': 6} %}
@@ -28,6 +25,8 @@
 {% set tls_deep = scan.get('tls_deep') if scan.get('tls_deep') is mapping else {} %}
 {% set tls_ok = tls_deep.get('status') == 'ok' %}
 {% set protocols = tls_deep.get('protocols') if tls_deep.get('protocols') is mapping else {} %}
+{# Protocoles à null = test sslyze non abouti : la note TLS est alors calculée sur une analyse incomplète #}
+{% set tls_unknown = (protocols.values()|select('none')|list|length) if tls_ok else 0 %}
 {% set axfr = dns_sec.get('axfr') if dns_sec.get('axfr') is mapping else {} %}
 {% set crit_failure = scan.get('critical_failure') is sameas true %}
 
@@ -126,13 +125,6 @@
 {% endfor %}
 {% set header_total = header_rows|length %}
 {# Ordre aligné sur le tri des cartes (rank) : risque d'abord, conforme en dernier #}
-{% set coverage = [
-    ('Manquant · moyen', 'missing-medium', 'bg-medium'),
-    ('Manquant · faible', 'missing-low', 'bg-low'),
-    ('Non vérifiable', 'unverifiable', 'bg-line-strong'),
-    ('Non observé', 'unobserved', 'bg-fg-subtle'),
-    ('Actif', 'active', 'bg-pass')
-] %}
 
 {# Cookies : exposé = medium (cohérent avec le comptage du graphe) #}
 {% set cookie_rows = [] %}
@@ -274,401 +266,331 @@
 {% for n, t, l, d, i in dns_raw %}{% set _ = dns_rows.append({'name': n, 'tone': t, 'label': l, 'detail': d, 'impact': i, 'rank': tone_rank.get(t, 9)}) %}{% endfor %}
 
 {% set ai = audit.ai_report if audit.ai_report is mapping else {} %}
+{# Échec LLM (clé invalide, quota, JSON illisible) : le fallback du back pose un message d'erreur brut, jamais affiché tel quel #}
+{% set ai_failed_markers = ['Erreur IA', 'Pas de clé', 'Rapport IA généré sans résumé exploitable.'] %}
+{% set ai_ok = ai.get('executive') is string and ai.get('executive')|trim and ai.get('executive') not in ai_failed_markers
+               and ai.get('technical') is sequence and ai.get('technical') is not string and ai.get('technical')|length > 0 %}
 {% set cap_gap = (raw_score - score) if cap and raw_score > score else 0 %}
 
-<!-- 1. HERO : score + grade + contexte (2 zones auto-fit, séparateur = gap 1px sur fond line) -->
-<section class="panel reveal overflow-hidden" style="--i: 0" aria-labelledby="auditDomain">
-    <div class="grid gap-px bg-line" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));">
+{# --- Habillage : tons métier -> classes visuelles (grade = donnée, jamais chrome) --- #}
+{% set gk = grade|lower if grade in ['A', 'B', 'C', 'D', 'F'] else 'x' %}
+{% set pill_of = {'pass': 'p-ok', 'critical': 'p-f', 'high': 'p-d', 'medium': 'p-c'} %}
+{% set text_of = {'critical': 't-f', 'high': 't-d', 'medium': 't-c'} %}
+{% set gcls_of = {'critical': 'g-f', 'high': 'g-d', 'medium': 'g-c', 'low': 'g-x'} %}
+{% set status_of = {'pass': 'ok', 'info': 'ok', 'critical': 'vuln', 'high': 'vuln', 'medium': 'warn', 'low': 'warn', 'neutral': 'na'} %}
+{% set status_text = {'ok': 'conforme', 'warn': 'à surveiller', 'vuln': 'vulnérable', 'na': 'non vérifié'} %}
+{% set headline = {'A': ('Posture solide', 'Chiffrement, DNS et en-têtes sont bien configurés : il reste peu de choses à corriger.'),
+                   'B': ('Bonne posture', 'La base est saine ; quelques durcissements restent à faire.'),
+                   'C': ('Posture correcte', 'Des lacunes notables tirent la note vers le bas.'),
+                   'D': ('Posture fragile', 'Plusieurs protections manquent ou ne sont que partielles.'),
+                   'F': ('Posture critique', 'Une défaillance majeure expose le domaine.')}.get(grade, ('Posture indéterminée', 'Le grade n’a pas pu être calculé.')) %}
 
-        <div class="bg-surface p-6 lg:p-8">
-            <div class="flex items-center justify-between gap-3">
-                <span class="label">Score de confiance</span>
-                <button type="button" class="btn btn-sm btn-ghost -mr-2 hover:text-accent-fg" aria-haspopup="dialog" aria-controls="scoreModal"
-                        onclick="document.getElementById('scoreModal').showModal()">
-                    <i class="fas fa-circle-info" aria-hidden="true"></i> Barème
-                </button>
+{% macro check_line(name, tone, label, detail, impact) -%}
+<div class="row">
+    <div class="k">{{ name }}{% if detail %}<small>{{ detail }}</small>{% endif %}</div>
+    <span class="pill {{ pill_of.get(tone, '') }}">{{ label }}</span>
+    {% if impact is number and impact > 0 %}<span class="imp {{ text_of.get(tone, '') }}">−{{ impact }}</span>{% else %}<span class="imp" aria-hidden="true">—</span><span class="sr-only">aucun impact sur la note</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{# --- Matrice : un carré par contrôle réellement exécuté (rien d'inventé) --- #}
+{% set tls_items, dns_items, hdr_items, cookie_items, infra_items = [], [], [], [], [] %}
+{% for r in tls_rows|sort(attribute='rank') %}{% set _ = tls_items.append((r.name, status_of.get(r.tone, 'na'), r.label)) %}{% endfor %}
+{% for r in dns_rows|sort(attribute='rank') %}{% set _ = dns_items.append((r.name, status_of.get(r.tone, 'na'), r.label)) %}{% endfor %}
+{% for r in header_rows|sort(attribute='rank') %}
+    {% set hs = 'ok' if r.group == 'active' else ('vuln' if r.group == 'missing-medium' else ('warn' if r.group == 'missing-low' else 'na')) %}
+    {% set _ = hdr_items.append((r.name, hs, r.label)) %}
+{% endfor %}
+{% for c in cookie_rows|sort(attribute='rank') %}{% set _ = cookie_items.append((c.name, 'ok' if c.secure else 'warn', 'Sécurisé' if c.secure else 'Exposé')) %}{% endfor %}
+{% set _ = infra_items.append(('WAF / CDN', 'ok' if waf_found else 'na', waf if waf_found else 'Non détecté')) %}
+{% set _ = infra_items.append(('Certificat', 'ok' if ssl.get('valid') else 'vuln', 'Valide' if ssl.get('valid') else 'Invalide')) %}
+{% set matrix = [('TLS / SSL', tls_items), ('DNS', dns_items), ('En-têtes', hdr_items), ('Cookies', cookie_items), ('Infra', infra_items)] %}
+{% set mc = namespace(vuln=0, warn=0, total=0) %}
+{% for label, items in matrix %}{% for n, st, t in items %}
+    {% set mc.total = mc.total + 1 %}
+    {% if st == 'vuln' %}{% set mc.vuln = mc.vuln + 1 %}{% elif st == 'warn' %}{% set mc.warn = mc.warn + 1 %}{% endif %}
+{% endfor %}{% endfor %}
+
+{# --- À corriger : risques réels, du plus grave au plus léger --- #}
+{% set finds = [] %}
+{% if crit_failure %}{% set _ = finds.append({'tone': 'critical', 'title': 'HTTPS non forcé', 'detail': 'Le site répond en clair : le scan s’est arrêté et la note est plafonnée.', 'tag': 'tls · plafond', 'key': 0}) %}{% endif %}
+{% for r in tls_rows if r.tone in ['critical', 'high', 'medium', 'low'] %}
+    {% set _ = finds.append({'tone': r.tone, 'title': r.name ~ ' : ' ~ r.label|lower, 'detail': r.detail, 'tag': 'tls' ~ (' · −' ~ r.impact if r.impact else ''), 'key': tone_rank[r.tone] * 1000 - (r.impact or 0)}) %}
+{% endfor %}
+{% for r in dns_rows if r.tone in ['critical', 'high', 'medium', 'low'] %}
+    {% set _ = finds.append({'tone': r.tone, 'title': r.name ~ ' : ' ~ r.label|lower, 'detail': r.detail, 'tag': 'dns' ~ (' · −' ~ r.impact if r.impact else ''), 'key': tone_rank[r.tone] * 1000 - (r.impact or 0)}) %}
+{% endfor %}
+{% for r in header_rows if r.group.startswith('missing') %}
+    {% set _ = finds.append({'tone': r.tone, 'title': 'En-tête ' ~ r.name ~ ' manquant', 'detail': 'Absent de la réponse HTTP observée.', 'tag': 'en-têtes' ~ (' · −' ~ (r.impact|abs) if r.impact is number else ''), 'key': tone_rank[r.tone] * 1000 - (r.impact|abs if r.impact is number else 0)}) %}
+{% endfor %}
+{% for c in cookie_rows if not c.secure %}
+    {% set _ = finds.append({'tone': 'medium', 'title': 'Cookie ' ~ c.name ~ ' exposé', 'detail': c.attrs, 'tag': 'cookies', 'key': 2000}) %}
+{% endfor %}
+{% set finds = finds|sort(attribute='key') %}
+
+<div class="g-{{ gk }}">
+
+<!-- 1. HERO : sceau-verdict + surface d'attaque -->
+<section aria-labelledby="auditDomain">
+    <div class="hero">
+        <div class="glass spot verdict rise" style="animation-delay:.05s">
+            <div class="sealwrap" role="img" aria-label="Score {{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné (score calculé {{ raw_score }}){% endif %}">
+                <div class="halo"></div>
+                <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="{{ score }}" aria-hidden="true"></svg>
+                <div class="mid" aria-hidden="true"><div class="g">{{ grade }}</div><div class="s"><span id="score">{{ score }}</span> / 100</div><div class="cap">VERDICT CERTIFIÉ</div></div>
             </div>
-
-            <div class="mt-4 flex items-end justify-between gap-4">
-                <p class="flex items-baseline gap-1.5">
-                    <span id="scoreValue" data-score="{{ score }}" aria-hidden="true"
-                          class="text-hero-sm lg:text-hero font-semibold tracking-[-0.03em] tabular-nums {{ score_color }}">{{ score }}</span>
-                    <span class="text-sm font-medium text-fg-muted" aria-hidden="true">/100</span>
-                    <span class="sr-only">Score {{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné (score calculé {{ raw_score }}){% endif %}</span>
-                </p>
-                <div class="grade tone-{{ tone }} grade-settle" aria-hidden="true">{{ grade }}</div>
-            </div>
-
-            <div class="mt-6">
-                <div class="meter" role="meter" aria-label="Score de confiance" aria-valuemin="0" aria-valuemax="100"
-                     aria-valuenow="{{ score }}" aria-valuetext="{{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné depuis {{ raw_score }}{% endif %}">
-                    <div class="meter-fill {{ fill }}" style="--score: {{ score }}"></div>
-                    {% if cap_gap %}
-                    {# Points perdus par le plafond : segment teinté entre score final et score calculé #}
-                    <span class="absolute inset-y-0 bg-critical/25" style="left: {{ score }}%; width: {{ cap_gap }}%"></span>
+            <div class="vmeta">
+                <h1 id="auditDomain">{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}.</h1>
+                <p class="say">{{ headline[1] }}</p>
+                <div class="facts">
+                    <span class="chip"><b>{{ audit.domain }}</b></span>
+                    {% if waf_found %}<span class="chip infra">● {{ waf }}</span>{% endif %}
+                    <span class="chip">serveur <b>{{ scan.get('server', '—') }}</b></span>
+                    <span class="chip">IP <b>{{ scan.get('ip', '—') }}</b></span>
+                    {% if audit.timestamp %}<span class="chip">analysé <b>{{ audit.timestamp.strftime('%d.%m · %H:%M') }} UTC</b></span>{% endif %}
+                    {% if v2_counts %}
+                    <span class="chip k-{{ 'f' if v2_counts.critical else 'z' }}">critiques <b>{{ v2_counts.critical }}</b></span>
+                    <span class="chip k-{{ 'c' if v2_counts.medium else 'z' }}">moyennes <b>{{ v2_counts.medium }}</b></span>
+                    <span class="chip k-z">faibles <b>{{ v2_counts.low }}</b></span>
                     {% endif %}
-                    <span class="meter-tick left-[40%]"></span>
-                    <span class="meter-tick left-[60%]"></span>
-                    <span class="meter-tick left-[80%]"></span>
-                    <span class="meter-tick left-[90%]"></span>
                 </div>
-                <div class="relative mt-1.5 h-4 font-mono text-2xs tabular-nums text-fg-subtle" aria-hidden="true">
-                    <span class="absolute left-0">0</span>
-                    <span class="absolute left-[40%] -translate-x-1/2">40</span>
-                    <span class="absolute left-[60%] -translate-x-1/2">60</span>
-                    <span class="absolute left-[80%] -translate-x-1/2">80</span>
-                    <span class="absolute left-[90%] -translate-x-1/2">90</span>
+                {% if scan.get('tech_stack') %}<p class="empty" style="margin-top:12px">Stack · {{ scan.get('tech_stack')|join(', ') }}</p>{% endif %}
+                <button type="button" class="linkbtn" aria-haspopup="dialog" aria-controls="scoreModal" onclick="document.getElementById('scoreModal').showModal()">Voir le barème</button>
+            </div>
+            {% if cap_gap or critical_findings %}
+            <div class="capbar">
+                <span class="i" aria-hidden="true">!</span>
+                <div>
+                    {% if cap_gap %}
+                    Note plafonnée à {{ cap.get('grade', '?') }} ({{ cap.get('max', score) }}) : {{ cap_reasons|join(' ; ') }}.
+                    <small>Score calculé avant plafond : {{ raw_score }}/100. Une faille grave ne se compense pas par les autres catégories.</small>
+                    {% else %}
+                    Faille{{ 's' if critical_findings|length > 1 }} critique{{ 's' if critical_findings|length > 1 }} : {{ critical_findings|map(attribute='label')|join(' ; ') }}.
+                    {% if has_v2 %}<small>Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.</small>{% endif %}
+                    {% endif %}
                 </div>
             </div>
-
-            <p class="mt-4 text-xs text-fg-muted">
-                Grade {{ grade }}{% if grade in grade_ranges %} · seuil {{ grade_ranges[grade] }}{% endif %}
-                {%- if has_v2 %} · moyenne pondérée de {{ cat_rows|length }} catégories{% if infra_bonus %} + bonus infra{% endif %}{% if cap_gap %} · <span class="text-critical-fg">plafonné</span>{% endif %}
-                {%- else %} · barème v1, base 50, bornée 0–100{% endif %}
-            </p>
+            {% endif %}
         </div>
 
-        <div class="bg-surface p-6 lg:p-8 flex flex-col gap-6">
-            <div class="min-w-0">
-                <span class="label">Cible auditée</span>
-                <h1 id="auditDomain" class="mt-1.5 font-mono text-lg font-medium text-fg break-all">{{ audit.domain }}</h1>
-                <dl class="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 font-mono text-xs">
-                    <div class="flex gap-1.5"><dt class="text-fg-muted">IP</dt><dd class="text-fg">{{ scan.get('ip', '—') }}</dd></div>
-                    <div class="flex gap-1.5"><dt class="text-fg-muted">Serveur</dt><dd class="text-fg">{{ scan.get('server', '—') }}</dd></div>
-                    {% if audit.timestamp %}
-                    <div class="flex gap-1.5"><dt class="text-fg-muted">Analysé</dt><dd class="text-fg">{{ audit.timestamp.strftime('%d/%m/%Y %H:%M') }} UTC</dd></div>
-                    {% endif %}
-                </dl>
-                {% if scan.get('tech_stack') %}
-                <p class="mt-1 font-mono text-xs text-fg-muted">Stack · <span class="text-fg">{{ scan.get('tech_stack')|join(', ') }}</span></p>
-                {% endif %}
-            </div>
-
-            <div class="mt-auto grid grid-cols-3 divide-x divide-line border-t border-line pt-5">
-                {% for cid, clabel, ctone, ckey in [('criticalCount', 'Critiques', 'critical', 'critical'), ('mediumCount', 'Moyennes', 'medium', 'medium'), ('lowCount', 'Faibles', 'low', 'low')] %}
-                {% set n = v2_counts[ckey] if v2_counts else none %}
-                <div class="vulnerability-metric {{ 'pr-4' if loop.first else ('pl-4' if loop.last else 'px-4') }}">
-                    <div class="label">{{ clabel }}</div>
-                    <div id="{{ cid }}" data-tone="text-{{ ctone }}-fg"
-                         class="mt-2 text-2xl leading-none font-semibold tabular-nums {{ 'text-fg-muted' if n == 0 else 'text-' ~ ctone ~ '-fg' }}">{{ n if n is not none else '–' }}</div>
-                </div>
-                {% endfor %}
-            </div>
+        <div class="glass spot radar rise" style="animation-delay:.12s">
+            <h2>Surface d'attaque</h2>
+            <div class="sub">Protection estimée par l'IA · 5 axes</div>
+            {% set risks = ai.get('risks') if ai.get('risks') is mapping else {} %}
+            {% set rvals = [risks.get('mitm', 0)|int, risks.get('xss', 0)|int, risks.get('clickjacking', 0)|int, risks.get('sniffing', 0)|int, risks.get('waf', 0)|int] %}
+            {% if rvals|sum > 0 %}
+            <svg width="100%" height="200" viewBox="0 -4 280 230" role="img" aria-label="Radar des protections estimées par l'IA, de 0 à 100">
+                <defs><radialGradient id="rg" cx="50%" cy="45%"><stop offset="0%" stop-color="rgba(139,124,255,.35)"/><stop offset="100%" stop-color="rgba(139,124,255,.08)"/></radialGradient></defs>
+                <g id="radarPlot"
+                   data-labels='{{ ["MITM", "XSS", "Clickjack", "Sniffing", "WAF"]|tojson }}'
+                   data-values='{{ rvals|tojson }}'></g>
+            </svg>
+            {% else %}
+            <p class="empty"><b>Estimation indisponible.</b> Le rapport IA n'a pas renvoyé de valeurs exploitables pour ce scan.</p>
+            {% endif %}
         </div>
     </div>
 </section>
-
-{# 2. FAILLES CRITIQUES / PLAFOND : juste sous le score, c'est ce qui l'explique #}
-{% if cap_gap or critical_findings %}
-<div class="reveal mt-3 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm tone-critical" style="--i: 1">
-    <i class="fas fa-triangle-exclamation mt-0.5" aria-hidden="true"></i>
-    <div class="min-w-0 text-fg">
-        {% if cap_gap %}
-        <p class="font-medium">Note plafonnée à {{ cap.get('grade', '?') }} ({{ cap.get('max', score) }}/100) : {{ cap_reasons|join(' ; ') }}.</p>
-        <p class="mt-0.5 text-xs text-fg-muted">Score calculé avant plafond : <span class="font-mono tabular-nums text-fg">{{ raw_score }}/100</span>. Une faille grave ne se compense pas par les autres catégories.</p>
-        {% else %}
-        <p class="font-medium">Faille{{ 's' if critical_findings|length > 1 }} critique{{ 's' if critical_findings|length > 1 }} : {{ critical_findings|map(attribute='label')|join(' ; ') }}.</p>
-        {% if has_v2 %}<p class="mt-0.5 text-xs text-fg-muted">Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.</p>{% endif %}
-        {% endif %}
-    </div>
-</div>
-{% endif %}
 
 {% if has_v2 and cat_rows %}
-<!-- 3. NOTES PAR CATÉGORIE : triées de la plus faible à la plus haute -->
-<section class="panel reveal mt-5 overflow-hidden" style="--i: 2" aria-labelledby="categoriesTitle">
-    <header class="panel-header">
-        <h2 id="categoriesTitle" class="panel-title"><i class="fas fa-layer-group" aria-hidden="true"></i> Notes par catégorie</h2>
-        <span class="text-xs text-fg-muted">Plus faible d'abord</span>
-    </header>
-    <ul class="grid gap-px bg-line" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));">
-        {% for c in cat_rows|sort(attribute='score') %}
-        <li class="flex flex-col gap-3 bg-surface p-5">
-            <div class="flex items-baseline justify-between gap-2">
-                <h3 class="text-xs font-medium text-fg">{{ c.label }}</h3>
-                <span class="font-mono text-2xs tabular-nums text-fg-subtle">poids {{ c.weight }} %</span>
-            </div>
-            <p class="flex items-baseline gap-1">
-                <span class="text-2xl font-semibold leading-none tabular-nums text-{{ c.tone }}-fg">{{ c.score }}</span>
-                <span class="text-xs text-fg-muted"><span aria-hidden="true">/100</span><span class="sr-only">sur 100</span></span>
-            </p>
-            <div class="meter h-1.5" aria-hidden="true"><div class="meter-fill bg-{{ c.tone }}" style="--score: {{ c.score }}"></div></div>
-            {% if c.deductions %}
-            <ul class="divide-y divide-line text-xs">
-                {% for d in c.deductions %}
-                <li class="flex items-baseline justify-between gap-3 py-1.5 first:pt-0 last:pb-0">
-                    <span class="min-w-0 text-fg-muted">{{ d.label }}</span>
-                    <span class="shrink-0 font-mono tabular-nums text-{{ d.sev }}-fg">-{{ d.points }}</span>
-                </li>
-                {% endfor %}
-            </ul>
-            {% else %}
-            <p class="text-xs text-fg-subtle">Aucune déduction.</p>
-            {% endif %}
-            {% if c.key == 'dns' and not dns_sec %}
-            <p class="mt-auto text-2xs text-fg-subtle">Contrôles DNS non exécutés : note par défaut, non significative.</p>
-            {% elif c.key == 'tls' and not tls_ok %}
-            <p class="mt-auto text-2xs text-fg-subtle">Analyse approfondie indisponible : seul le certificat est noté.</p>
-            {% elif c.key == 'cookies' and not cookie_rows %}
-            <p class="mt-auto text-2xs text-fg-subtle">Aucun cookie posé : rien à risque.</p>
-            {% endif %}
-        </li>
+<!-- 2. SCORECARDS : note par catégorie, pondérées -->
+<section aria-labelledby="categoriesTitle">
+    <div class="eyebrow" id="categoriesTitle">Notes par catégorie · moyenne pondérée</div>
+    <div class="cats">
+        {% for c in cat_rows|sort(attribute='weight', reverse=true) %}
+        {% set cg = 'a' if c.score >= 90 else ('b' if c.score >= 80 else ('c' if c.score >= 60 else ('d' if c.score >= 40 else 'f'))) %}
+        <div class="glass spot cat g-{{ cg }} rise" style="animation-delay:{{ '%.2f'|format(0.18 + loop.index0 * 0.06) }}s">
+            <div class="bar-top"></div>
+            <div class="top"><span class="nm">{{ c.label }}</span><span class="w">{{ c.weight }}%</span></div>
+            <div class="sc">{{ c.score }}<small><span aria-hidden="true">/100</span><span class="sr-only"> sur 100</span></small></div>
+            <div class="mbar" aria-hidden="true"><i style="width:{{ c.score }}%"></i></div>
+            {% for d in c.deductions[:2] %}<div class="ded"><span>{{ d.label }}</span><b>−{{ d.points }}</b></div>{% endfor %}
+            {% if not c.deductions %}<div class="ded"><span>Aucune déduction</span><b>—</b></div>{% endif %}
+            {% if c.key == 'dns' and not dns_sec %}<p class="note">Contrôles DNS non exécutés : note par défaut, non significative.</p>
+            {% elif c.key == 'tls' and not tls_ok %}<p class="note">Analyse approfondie indisponible : seul le certificat est noté.</p>
+            {% elif c.key == 'tls' and tls_unknown %}<p class="note partial"><b>Analyse TLS partielle</b> : {{ tls_unknown }} protocole{{ 's' if tls_unknown > 1 }} non vérifié{{ 's' if tls_unknown > 1 }}, aucune déduction pour {{ 'ces contrôles' if tls_unknown > 1 else 'ce contrôle' }}.</p>
+            {% elif c.key == 'cookies' and not cookie_rows %}<p class="note">Aucun cookie posé : rien à risque.</p>{% endif %}
+        </div>
         {% endfor %}
-    </ul>
-    <dl class="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-line px-5 py-3 font-mono text-xs tabular-nums">
-        <div class="flex gap-1.5"><dt class="text-fg-muted">Σ note × poids</dt><dd class="text-fg">{{ '%.1f'|format(ns.weighted) }}</dd></div>
-        <div class="flex gap-1.5"><dt class="text-fg-muted">Bonus infra</dt><dd class="{{ 'text-pass-fg' if infra_bonus else 'text-fg-muted' }}">+{{ infra_bonus }}</dd></div>
-        <div class="flex gap-1.5"><dt class="text-fg-muted">Score calculé</dt><dd class="text-fg">{{ raw_score }}</dd></div>
-        {% if cap_gap %}
-        <div class="flex gap-1.5"><dt class="text-fg-muted">Plafond</dt><dd class="text-critical-fg">{{ cap.get('max', score) }} ({{ cap.get('grade', '?') }})</dd></div>
-        {% endif %}
-        <div class="ml-auto flex gap-1.5"><dt class="text-fg-muted">Final</dt><dd class="font-semibold {{ score_color }}">{{ score }}/100</dd></div>
-    </dl>
+    </div>
+    <div class="formula">
+        <span>Σ note × poids <b>{{ '%.1f'|format(ns.weighted) }}</b></span>
+        <span>bonus infra <b>+{{ infra_bonus }}</b></span>
+        <span>score calculé <b>{{ raw_score }}</b></span>
+        {% if cap_gap %}<span>plafond <b>{{ cap.get('max', score) }} ({{ cap.get('grade', '?') }})</b></span>{% endif %}
+        <span>final <b>{{ score }}/100</b></span>
+    </div>
 </section>
 {% endif %}
 
-<!-- 3bis. ANALYSE IA + RADAR : synthèse LLM côte à côte, remontée au-dessus des détails -->
-<div class="mt-5 grid gap-5 lg:grid-cols-[1.7fr_1fr]">
-    <section class="panel reveal" style="--i: 3" aria-labelledby="aiTitle">
-        <header class="panel-header">
-            <h2 id="aiTitle" class="panel-title"><i class="fas fa-file-lines" aria-hidden="true"></i> Analyse IA</h2>
-            <span class="text-xs text-fg-muted">Générée par LLM · à vérifier</span>
-        </header>
-        <div class="panel-body grid gap-x-8 gap-y-6 sm:grid-cols-2">
-            <div>
-                <h3 class="label">Résumé exécutif</h3>
-                <p class="mt-2 text-sm leading-6 text-fg">{{ ai.get('executive', '') }}</p>
-            </div>
-
-            <div>
-                <h3 class="label">Points techniques clés</h3>
-                {% set technical = ai.get('technical', '') %}
-                {% if technical is sequence and technical is not string %}
-                    <ul class="mt-2 divide-y divide-line">
-                        {% for point in technical %}
-                            <li class="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
-                                <span class="mt-2 h-1 w-1 shrink-0 rounded-full bg-accent-fg" aria-hidden="true"></span>
-                                <span class="markdown-text text-dense text-fg-muted">{{ point }}</span>
-                            </li>
-                        {% endfor %}
-                    </ul>
-                {% else %}
-                    <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted">{{ technical }}</pre>
-                {% endif %}
-            </div>
-        </div>
-    </section>
-
-    <section class="panel reveal" style="--i: 3" aria-labelledby="radarTitle">
-        <header class="panel-header">
-            <h2 id="radarTitle" class="panel-title">
-                <i class="fas fa-crosshairs" aria-hidden="true"></i> Surface d'attaque
-                <button type="button" class="tip focus-ring rounded text-fg-subtle transition-colors hover:text-accent-fg"
-                        data-tip="Protection estimée par l'IA (0–100) : SSL/MITM interception · Anti-XSS injection de scripts · Clickjack iframes piégées · Sniffing fichiers déguisés · WAF/CDN filtrage périmétrique"
-                        aria-label="Légende : protection estimée par l'IA de 0 à 100 sur 5 axes — SSL/MITM, Anti-XSS, Clickjack, Sniffing, WAF/CDN">
-                    <i class="fas fa-circle-question" aria-hidden="true"></i>
-                </button>
-            </h2>
-            <span class="badge tone-neutral">Estimation IA</span>
-        </header>
-        <div class="panel-body">
-            <div class="relative h-56 w-full">
-                <canvas id="securityRadar" role="img" aria-label="Radar des protections estimées par l'IA, de 0 à 100"></canvas>
-            </div>
-        </div>
-    </section>
-</div>
-
-<!-- 4. MATRICE DES EN-TÊTES : une tuile par en-tête réellement analysé, triée par risque -->
-<section class="panel reveal mt-5" style="--i: 4" aria-labelledby="headersTitle">
-    <header class="panel-header">
-        <h2 id="headersTitle" class="panel-title"><i class="fas fa-shield-alt" aria-hidden="true"></i> En-têtes de sécurité</h2>
-        <span class="text-xs tabular-nums text-fg-muted">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span>
-    </header>
-    <div class="panel-body">
-        {% if header_total %}
-        {# Couverture : proportions réelles par statut #}
-        <div class="flex h-1.5 w-full gap-0.5 overflow-hidden rounded-full" role="img"
-             aria-label="Couverture : {% for label, g, bg in coverage %}{% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}{% if n %}{{ n }} {{ label|lower }}{{ ', ' if not loop.last }}{% endif %}{% endfor %}">
-            {% for label, g, bg in coverage %}
-                {% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}
-                {% if n %}<span class="{{ bg }} h-full" style="flex: {{ n }} 1 0"></span>{% endif %}
-            {% endfor %}
-        </div>
-        <ul class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted" aria-hidden="true">
-            {% for label, g, bg in coverage %}
-                {% set n = header_rows|selectattr('group', 'equalto', g)|list|length %}
-                {% if n %}<li class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm {{ bg }}"></span>{{ label }} <span class="font-mono tabular-nums text-fg">{{ n }}</span></li>{% endif %}
-            {% endfor %}
-        </ul>
-
-        <ul class="mt-5 grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));">
-            {% for row in header_rows|sort(attribute='rank') %}
-            {% set missing = row.group.startswith('missing') %}
-            <li tabindex="0" data-tip="Scanner : {{ row.raw }}"
-                class="tip focus-ring flex flex-col gap-2.5 rounded-lg border p-3 transition-colors duration-150 hover:border-accent-fg/40
-                       border-line {{ ('bg-' ~ row.tone ~ '/5 sev-' ~ row.tone) if missing else 'bg-surface-2/40' }}">
-                <span class="truncate font-mono text-xs text-fg">{{ row.name }}</span>
-                <span class="flex items-center justify-between gap-2">
-                    <span class="badge tone-{{ row.tone }}">{{ row.label }}</span>
-                    {% if row.impact is number %}<span class="font-mono text-2xs tabular-nums text-{{ row.itone }}-fg">{{ '%+d'|format(row.impact) }} pts</span>{% endif %}
-                </span>
-                <span class="sr-only">Statut brut du scanner : {{ row.raw }}</span>
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <p class="py-6 text-center text-xs text-fg-muted">Aucun en-tête analysé{% if crit_failure %} : scan interrompu (HTTPS non forcé){% endif %}.</p>
-        {% endif %}
+<!-- 3. INFRASTRUCTURE : bande pleine largeur, juste sous les scorecards -->
+<section>
+    <div class="glass spot infra rise" style="animation-delay:.38s">
+        <h2>Infrastructure</h2>
+        <dl>
+            <div><dt>Protection</dt><dd>{% if waf_found %}{{ waf }}{% else %}Non détectée{% endif %}</dd></div>
+            <div><dt>Serveur</dt><dd title="{{ scan.get('server', '') }}">{{ scan.get('server', '—') }}</dd></div>
+            <div><dt>Certificat TLS</dt><dd>{% if ssl.get('valid') %}Valide{% else %}Invalide{% endif %}</dd></div>
+            <div><dt>Émetteur</dt><dd title="{{ ssl.get('issuer', '') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd></div>
+            {% if ssl.get('expiry') and ssl.get('expiry') != 'N/A' %}<div><dt>Expiration</dt><dd>{{ ssl.get('expiry') }}</dd></div>{% endif %}
+        </dl>
     </div>
 </section>
 
-<!-- 5. CARTES AUTO-FIT : 1 colonne mobile → 2 → 3 sur large, sans media query -->
-<div class="auto-grid mt-5" style="--min: 30rem">
-
-    {% set tcat = cat_by_key.get('tls') %}
-    <section class="panel reveal flex flex-col" style="--i: 4" aria-labelledby="tlsTitle">
-        <header class="panel-header">
-            <h2 id="tlsTitle" class="panel-title"><i class="fas fa-lock" aria-hidden="true"></i> TLS / SSL</h2>
-            {% if tcat %}<span class="font-mono text-xs tabular-nums text-fg-muted">{{ tcat.score }}/100 · poids {{ tcat.weight }} %</span>{% endif %}
-        </header>
-        <div class="overflow-x-auto">
-            <table class="table">
-                <thead><tr><th scope="col">Contrôle</th><th scope="col">Résultat</th><th scope="col" class="text-right">Statut</th><th scope="col" class="text-right">Impact</th></tr></thead>
-                <tbody>
-                    {% for r in tls_rows|sort(attribute='rank') %}{{ check_row(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    {% set dcat = cat_by_key.get('dns') %}
-    <section class="panel reveal flex flex-col" style="--i: 5" aria-labelledby="dnsTitle">
-        <header class="panel-header">
-            <h2 id="dnsTitle" class="panel-title"><i class="fas fa-network-wired" aria-hidden="true"></i> DNS &amp; messagerie</h2>
-            {% if dns_rows and dcat %}<span class="font-mono text-xs tabular-nums text-fg-muted">{{ dcat.score }}/100 · poids {{ dcat.weight }} %</span>
-            {% elif not dns_rows %}<span class="badge tone-neutral">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
-        </header>
-        {% if dns_rows %}
-        <div class="overflow-x-auto">
-            <table class="table">
-                <thead><tr><th scope="col">Contrôle</th><th scope="col">Résultat</th><th scope="col" class="text-right">Statut</th><th scope="col" class="text-right">Impact</th></tr></thead>
-                <tbody>
-                    {% for r in dns_rows|sort(attribute='rank') %}{{ check_row(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <p class="px-5 py-6 text-center text-xs text-fg-muted">
-            {% if crit_failure %}Scan interrompu (HTTPS non forcé) : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR non contrôlés.
-            {% else %}Audit antérieur aux contrôles SPF, DMARC, DKIM, DNSSEC, CAA et AXFR. Relancez un scan pour les obtenir.{% endif %}
-        </p>
-        {% endif %}
-    </section>
-
-    <section class="panel reveal flex flex-col" style="--i: 6" aria-labelledby="cookiesTitle">
-        <header class="panel-header">
-            <h2 id="cookiesTitle" class="panel-title"><i class="fas fa-cookie-bite" aria-hidden="true"></i> Cookies</h2>
-            <span class="text-xs tabular-nums text-fg-muted">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span>
-        </header>
-        <div class="overflow-x-auto">
-            <table class="table">
-                <thead><tr><th scope="col">Cookie</th><th scope="col">Attributs</th><th scope="col" class="text-right">Statut</th></tr></thead>
-                <tbody>
-                    {% for c in cookie_rows|sort(attribute='rank') %}
-                    <tr>
-                        <td class="data max-w-[10rem] truncate {{ 'sev-medium' if not c.secure }}" title="{{ c.name }}">{{ c.name }}</td>
-                        <td class="text-xs text-fg-muted">{{ c.attrs }}</td>
-                        <td class="text-right">
-                            {% if c.secure %}<span class="badge tone-pass">Sécurisé</span>{% else %}<span class="badge tone-medium">Exposé</span>{% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                    {% for note in cookie_notes %}
-                    <tr><td colspan="3" class="text-xs text-fg-muted">{{ note }}</td></tr>
-                    {% endfor %}
-                    {% if not cookie_rows and not cookie_notes %}
-                    <tr><td colspan="3" class="py-6 text-center text-xs text-fg-muted">Aucun cookie détecté.</td></tr>
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <section class="panel reveal" style="--i: 7" aria-labelledby="infraTitle">
-        <header class="panel-header"><h2 id="infraTitle" class="panel-title"><i class="fas fa-server" aria-hidden="true"></i> Infrastructure</h2></header>
-        <dl class="divide-y divide-line">
-            <div class="flex items-center justify-between gap-3 px-5 py-3">
-                <dt class="text-xs text-fg-muted">Protection</dt>
-                <dd>{% if waf_found %}<span class="badge tone-info normal-case tracking-normal">{{ waf }}</span>{% else %}<span class="badge tone-neutral">Non détecté</span>{% endif %}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-3 px-5 py-3">
-                <dt class="text-xs text-fg-muted">Serveur</dt>
-                <dd class="truncate font-mono text-xs text-fg" title="{{ scan.get('server', '') }}">{{ scan.get('server', '—') }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-3 px-5 py-3">
-                <dt class="text-xs text-fg-muted">Certificat TLS</dt>
-                <dd>{% if ssl.get('valid') %}<span class="badge tone-pass">Valide</span>{% else %}<span class="badge tone-critical">Invalide</span>{% endif %}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-3 px-5 py-3">
-                <dt class="text-xs text-fg-muted">Émetteur</dt>
-                <dd class="truncate font-mono text-xs text-fg" title="{{ ssl.get('issuer', '') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd>
-            </div>
-            {% if ssl.get('expiry') and ssl.get('expiry') != 'N/A' %}
-            <div class="flex items-center justify-between gap-3 px-5 py-3">
-                <dt class="text-xs text-fg-muted">Expiration</dt>
-                <dd class="font-mono text-xs text-fg">{{ ssl.get('expiry') }}</dd>
+<!-- 4. ÉVOLUTION (si historique) + ANALYSE IA -->
+<section>
+    <div class="mainrow{{ '' if score_history|length >= 2 else ' solo' }}">
+            {% if score_history|length >= 2 %}
+            {% set first_s = score_history[0].score %}{% set last_s = score_history[-1].score %}
+            {% set delta = last_s - first_s %}
+            <div class="glass spot trend rise" style="animation-delay:.42s">
+                <div class="ph"><h2>Évolution du score</h2>
+                    <span class="d">{{ score_history|length }} derniers scans · <b style="color:var({{ '--a' if delta > 0 else ('--f' if delta < 0 else '--faint') }})">{{ '%+d'|format(delta) }}</b></span>
+                </div>
+                <svg id="trend" width="100%" height="180" viewBox="0 0 640 180" role="img"
+                     aria-label="Score de {{ first_s }} à {{ last_s }} sur {{ score_history|length }} scans de {{ audit.domain }}"
+                     data-points='{{ score_history|tojson }}'></svg>
             </div>
             {% endif %}
-        </dl>
-    </section>
 
-    {% if not has_v2 %}
-    {# Repli ancien audit : détail additif du barème v1 #}
-    <section class="panel reveal flex flex-col" style="--i: 8" aria-labelledby="scoreCalcTitle">
-        <header class="panel-header">
-            <h2 id="scoreCalcTitle" class="panel-title"><i class="fas fa-calculator" aria-hidden="true"></i> Calcul du score</h2>
-            <span class="flex items-center gap-2"><span class="font-mono text-xs text-fg-muted">base 50</span><span class="badge tone-neutral">Barème v1</span></span>
-        </header>
-        <div class="max-h-96 overflow-y-auto">
-            <table class="table">
-                <thead><tr><th scope="col">Critère</th><th scope="col" class="text-right">Impact</th></tr></thead>
-                <tbody>
-                    {% for detail_raw in (scan.get('score_details') or []) %}
-                    {% set detail = detail_raw|string %}
-                    {% set raw = detail.split(' ')[0] %}
-                    {% set delta = raw|int %}
-                    {% if delta > 0 %}{% set dtone = 'pass' %}
-                    {% elif delta <= -50 %}{% set dtone = 'critical' %}
-                    {% elif delta <= -15 %}{% set dtone = 'medium' %}
-                    {% elif delta < 0 %}{% set dtone = 'low' %}
-                    {% else %}{% set dtone = 'neutral' %}{% endif %}
-                    <tr>
-                        <td class="text-xs {{ 'sev-' ~ dtone if delta < 0 }}">{{ (detail.split(':', 1)[1] if ':' in detail else detail)|trim }}</td>
-                        <td class="num text-xs whitespace-nowrap {{ 'text-' ~ dtone ~ '-fg' if dtone != 'neutral' else 'text-fg-muted' }}">{{ raw }} pts</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div class="glass airep rise" style="animation-delay:.46s" aria-labelledby="aiTitle">
+            <div class="ph"><span class="spark" aria-hidden="true"></span><h2 id="aiTitle">Analyse IA</h2><span class="bdg">généré par LLM · à vérifier</span></div>
+            {% if ai_ok %}
+            <div class="aibody">
+                <div>
+                    <h3 class="rsub">Résumé exécutif</h3>
+                    <p class="rlead markdown-text">{{ ai.get('executive') }}</p>
+                </div>
+                <div class="rptcol">
+                    <h3 class="rsub">Points techniques clés</h3>
+                    <div class="rptwrap">
+                        {% for point in ai.get('technical') %}<div class="rpt"><span class="dm" aria-hidden="true"></span><div class="markdown-text">{{ point }}</div></div>{% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="aifail" role="status">
+                <p><b>Analyse IA indisponible.</b></p>
+                <p>Réessayez ou vérifiez la configuration (modèle et clé API) depuis la déconnexion, puis relancez un scan.</p>
+                <p class="empty">Le score et tous les contrôles de cette page ne dépendent pas de l'IA.</p>
+            </div>
+            {% endif %}
         </div>
-        <div class="mt-auto flex items-center justify-between border-t border-line px-5 py-3 text-xs">
-            <span class="font-medium text-fg">Score final <span class="text-fg-muted">(borné 0–100)</span></span>
-            <span class="font-mono font-semibold tabular-nums {{ score_color }}">{{ score }}/100</span>
-        </div>
-    </section>
-    {% endif %}
+    </div>
+</section>
 
-    {% include "components/vulnerability_chart.html" %}
+<!-- 5. SURFACE DE VULNÉRABILITÉS : pleine largeur -->
+<section>
+    <div class="glass spot bigheat rise" style="animation-delay:.5s">
+            <div class="ph"><h2>Surface de vulnérabilités</h2>
+                <span class="leg" aria-hidden="true"><i class="s-ok"></i>conforme<i class="s-warn"></i>à surveiller<i class="s-vuln"></i>vulnérable<i class="s-na"></i>non vérifié</span>
+            </div>
+            <div class="vmat">
+                {% for label, items in matrix if items %}
+                <div class="vrow">
+                    <div class="vlab">{{ label }}</div>
+                    <div class="vcells">
+                        {% for n, st, t in items %}<div class="vc s-{{ st }}" tabindex="0" data-t="{{ n }} · {{ t }}" role="img" aria-label="{{ n }} : {{ status_text[st] }}"></div>{% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="vfoot">
+                <span style="color:#f8a7a0"><b style="color:var(--f)">{{ mc.vuln }}</b> vulnérables</span>
+                <span style="color:#f5ce84"><b style="color:var(--c)">{{ mc.warn }}</b> à surveiller</span>
+                <span><b>{{ mc.total }}</b> contrôles exécutés</span>
+            </div>
+        </div>
+</section>
+
+<!-- 6. DÉTAIL : colonnes CSS, empilement équilibré sans panneau orphelin -->
+<section>
+    <div class="cols">
+        {% set tcat = cat_by_key.get('tls') %}
+        <div class="glass spot panel rise" style="animation-delay:.48s">
+            <div class="ph"><h2>TLS / SSL</h2>{% if tcat %}<span class="sc">{{ tcat.score }}/100 · poids {{ tcat.weight }}%{% if tls_unknown %} · <span class="partial">partielle</span>{% endif %}</span>{% endif %}</div>
+            {% for r in tls_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
+        </div>
+
+        {% set dcat = cat_by_key.get('dns') %}
+        <div class="glass spot panel rise" style="animation-delay:.54s">
+            <div class="ph"><h2>DNS &amp; messagerie</h2>
+                {% if dns_rows and dcat %}<span class="sc">{{ dcat.score }}/100 · poids {{ dcat.weight }}%</span>
+                {% elif not dns_rows %}<span class="pill">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
+            </div>
+            {% if dns_rows %}
+                {% for r in dns_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
+            {% else %}
+            <p class="empty empty-row">
+                {% if crit_failure %}Scan interrompu (HTTPS non forcé) : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR non contrôlés.
+                {% else %}Audit antérieur aux contrôles SPF, DMARC, DKIM, DNSSEC, CAA et AXFR. Relancez un scan pour les obtenir.{% endif %}
+            </p>
+            {% endif %}
+        </div>
+
+        <div class="glass spot panel rise" style="animation-delay:.56s">
+            <div class="ph"><h2>En-têtes de sécurité</h2><span class="sc">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span></div>
+            {% for r in header_rows|sort(attribute='rank') %}
+                {{ check_line(r.name, r.tone, r.label, '' if r.group == 'active' else r.raw, (r.impact|abs) if r.impact is number and r.impact < 0 else none) }}
+            {% else %}
+            <p class="empty empty-row">Aucun en-tête analysé{% if crit_failure %} : scan interrompu (HTTPS non forcé){% endif %}.</p>
+            {% endfor %}
+        </div>
+
+        <div class="glass spot panel rise" style="animation-delay:.6s">
+            <div class="ph"><h2>Cookies</h2><span class="sc">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span></div>
+            {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
+            {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
+            {% if not cookie_rows and not cookie_notes %}<p class="empty empty-row">Aucun cookie détecté.</p>{% endif %}
+        </div>
+
+        {% if not has_v2 %}
+        <div class="glass spot panel rise" style="animation-delay:.68s">
+            <div class="ph"><h2>Calcul du score</h2><span class="sc">barème v1 · base 50</span></div>
+            {% for detail_raw in (scan.get('score_details') or []) %}
+                {% set detail = detail_raw|string %}
+                {% set raw = detail.split(' ')[0] %}
+                {% set delta = raw|int %}
+                {% set dtone = 'pass' if delta > 0 else ('critical' if delta <= -50 else ('medium' if delta <= -15 else 'low')) %}
+                <div class="row">
+                    <div class="k">{{ (detail.split(':', 1)[1] if ':' in detail else detail)|trim }}</div>
+                    <span></span>
+                    <span class="imp {{ text_of.get(dtone, '') }}">{{ raw }}</span>
+                </div>
+            {% endfor %}
+            <div class="kv"><dt>Score final (borné 0–100)</dt><dd>{{ score }}/100</dd></div>
+        </div>
+        {% endif %}
+
+    </div>
+</section>
+
+
+<!-- 7. FEED : à corriger en priorité -->
+<section>
+    <div class="glass finds rise" style="animation-delay:.72s">
+        <div class="head">À corriger en priorité<span>{{ finds|length }} point{{ 's' if finds|length > 1 }}</span></div>
+        {% for f in finds[:8] %}
+        <div class="find g-{{ {'critical': 'f', 'high': 'd', 'medium': 'c'}.get(f.tone, 'x') }}">
+            <span class="sev" aria-hidden="true"></span>
+            <div class="t">{{ f.title }}{% if f.detail %}<span>{{ f.detail }}</span>{% endif %}</div>
+            <span class="tag">{{ f.tag }}</span>
+        </div>
+        {% else %}
+        <p class="empty empty-row">Aucun point bloquant observé sur ce scan.</p>
+        {% endfor %}
+    </div>
+    <div class="foot">Rapport généré par SecuScope · audit externe non intrusif · {{ mc.total }} contrôles exécutés</div>
+</section>
+
 </div>
 
 <!-- Barème : dialog natif (Échap, piège du focus et retour du focus fournis par showModal) -->
-<dialog id="scoreModal" class="panel reveal w-full max-w-lg max-h-[90vh] overflow-y-auto p-0 text-fg" aria-labelledby="scoreModalTitle">
-    <header class="panel-header">
-        <h2 id="scoreModalTitle" class="panel-title">Barème SecuScope{% if not has_v2 %} <span class="badge tone-neutral">v1</span>{% endif %}</h2>
-        <button type="button" onclick="document.getElementById('scoreModal').close()" class="btn btn-icon btn-ghost -mr-2" aria-label="Fermer le barème">
-            <i class="fas fa-times" aria-hidden="true"></i>
-        </button>
-    </header>
+<dialog id="scoreModal" class="modal" aria-labelledby="scoreModalTitle">
+    <div class="mh">
+        <h2 id="scoreModalTitle">Barème SecuScope{% if not has_v2 %} · v1{% endif %}</h2>
+        <button type="button" class="x" onclick="document.getElementById('scoreModal').close()" aria-label="Fermer le barème">&times;</button>
+    </div>
     {% if has_v2 %}
     {% set scale = [
         ('A', 'Configuration solide sur les quatre catégories, aucune faille plafonnante.'),
@@ -686,252 +608,31 @@
         ('F', 'Vulnérabilités critiques. Certificat TLS invalide, site accessible en clair (HTTP non forcé) ou absence totale de protections.')
     ] %}
     {% endif %}
-    <ul class="divide-y divide-line">
-        {% for letter, text in scale %}
-        <li class="flex items-start gap-3 px-5 py-3 {{ 'bg-surface-2' if letter == grade }}" {% if letter == grade %}aria-current="true"{% endif %}>
-            <span class="inline-grid h-8 w-8 shrink-0 place-items-center rounded-md border text-sm font-bold tone-{{ grade_tones[letter] }}">{{ letter }}</span>
-            <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                    <span class="font-mono text-xs tabular-nums text-fg">{{ grade_ranges[letter] }}</span>
-                    {% if letter == grade %}<span class="badge tone-info">Ce site</span>{% endif %}
-                </div>
-                <p class="mt-0.5 text-xs text-fg-muted">{{ text }}</p>
-            </div>
-        </li>
-        {% endfor %}
-    </ul>
+    {% for letter, text in scale %}
+    <div class="scale g-{{ letter|lower }} {{ 'on' if letter == grade }}" {% if letter == grade %}aria-current="true"{% endif %}>
+        <span class="gl">{{ letter }}</span>
+        <div><div class="rg">{{ grade_ranges[letter] }}{% if letter == grade %} · ce site{% endif %}</div><p>{{ text }}</p></div>
+    </div>
+    {% endfor %}
 
     {% if has_v2 %}
-    <div class="border-t border-line">
-        <h3 class="label px-5 pt-4">Pondération</h3>
-        <table class="table mt-1">
-            <thead class="sr-only"><tr><th scope="col">Catégorie</th><th scope="col">Poids</th></tr></thead>
-            <tbody>
-                {% for c in cat_rows|sort(attribute='weight', reverse=true) %}
-                <tr><td class="text-xs">{{ c.label }}</td><td class="num text-xs text-fg-muted">{{ c.weight }} %</td></tr>
-                {% endfor %}
-                <tr><td class="text-xs">Bonus infrastructure (WAF/CDN)</td><td class="num text-xs text-fg-muted">+5 / couche, max +10</td></tr>
-            </tbody>
-        </table>
-        <p class="px-5 pb-3 text-2xs text-fg-subtle">Chaque catégorie part de 100 et déduit par problème observé. Un contrôle non vérifié ne déduit rien.</p>
-    </div>
-    <div class="border-t border-line">
-        <h3 class="label px-5 pt-4">Plafonds (faille critique)</h3>
-        <table class="table mt-1">
-            <thead class="sr-only"><tr><th scope="col">Faille</th><th scope="col">Score maximum</th></tr></thead>
-            <tbody>
-                {% for ckey, clabel, cmax, cgrade in [('http', 'HTTP en clair / HTTPS non forcé', 20, 'F'), ('cert', 'Certificat TLS invalide', 59, 'D'), ('sslv', 'SSLv2/SSLv3 accepté', 79, 'C'), ('axfr', 'Transfert de zone AXFR ouvert', 79, 'C')] %}
-                {% set hit = ckey in critical_keys %}
-                <tr {% if hit %}aria-current="true"{% endif %}>
-                    <td class="text-xs {{ 'sev-critical' if hit }}">{{ clabel }}{% if hit %} <span class="badge tone-critical ml-1">Ce site</span>{% endif %}</td>
-                    <td class="num text-xs whitespace-nowrap text-fg-muted">≤ {{ cmax }} <span class="badge tone-{{ grade_tones[cgrade] }} ml-1">{{ cgrade }}</span></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        <p class="px-5 pb-3 text-2xs text-fg-subtle">Appliqués après le bonus : une faille grave ne se rachète pas.</p>
-    </div>
+    <h3>Pondération</h3>
+    <table>
+        {% for c in cat_rows|sort(attribute='weight', reverse=true) %}<tr><td>{{ c.label }}</td><td>{{ c.weight }} %</td></tr>{% endfor %}
+        <tr><td>Bonus infrastructure (WAF/CDN)</td><td>+5 / couche, max +10</td></tr>
+    </table>
+    <p class="fine">Chaque catégorie part de 100 et déduit par problème observé. Un contrôle non vérifié ne déduit rien.</p>
+
+    <h3>Plafonds (faille critique)</h3>
+    <table>
+        {% for ckey, clabel, cmax, cgrade in [('http', 'HTTP en clair / HTTPS non forcé', 20, 'F'), ('cert', 'Certificat TLS invalide', 59, 'D'), ('sslv', 'SSLv2/SSLv3 accepté', 79, 'C'), ('axfr', 'Transfert de zone AXFR ouvert', 79, 'C')] %}
+        {% set hit = ckey in critical_keys %}
+        <tr {% if hit %}aria-current="true"{% endif %}><td{% if hit %} style="color:#f8a7a0"{% endif %}>{{ clabel }}{% if hit %} · ce site{% endif %}</td><td>≤ {{ cmax }} ({{ cgrade }})</td></tr>
+        {% endfor %}
+    </table>
+    <p class="fine">Appliqués après le bonus : une faille grave ne se rachète pas.</p>
     {% endif %}
 
-    <div class="border-t border-line p-4">
-        <button type="button" onclick="document.getElementById('scoreModal').close()" class="btn btn-md btn-secondary w-full">Fermer</button>
-    </div>
+    <div class="mf"><button type="button" class="btn" onclick="document.getElementById('scoreModal').close()">Fermer</button></div>
 </dialog>
-
-<script>
-    // 0. HERO : compteur synchronisé avec la jauge (même durée, même courbe quint, même délai)
-    (() => {
-        const el = document.getElementById('scoreValue');
-        const target = Number(el?.dataset.score);
-        if (!el || !Number.isFinite(target) || window.ssReducedMotion) return;
-        const D = 1100, t0 = performance.now() + 120, ease = t => 1 - Math.pow(1 - t, 5);
-        const tick = now => {
-            const t = Math.min(Math.max((now - t0) / D, 0), 1);
-            el.textContent = Math.round(target * ease(t));
-            if (t < 1) requestAnimationFrame(tick);
-        };
-        el.textContent = '0';
-        requestAnimationFrame(tick);
-    })();
-
-    const chartAnimation = window.ssReducedMotion ? false : { duration: 400, easing: 'easeOutQuint' };
-    const MONO = "'JetBrains Mono', ui-monospace, monospace", SANS = "Inter, ui-sans-serif, system-ui, sans-serif";
-    const chartFont = (size, family = MONO) => ({ size, family });
-
-    // 1. RADAR CHART CONFIGURATION (Attack Surface) — estimation LLM = télémétrie indigo
-    const ctx = document.getElementById('securityRadar');
-    {# Sortie LLM : forcée en entier pour ne jamais injecter de code dans le <script> #}
-    {% set risks = ai.get('risks') if ai.get('risks') is mapping else {} %}
-    const riskData = {
-        mitm: {{ risks.get('mitm', 50)|int }},
-        xss: {{ risks.get('xss', 50)|int }},
-        clickjacking: {{ risks.get('clickjacking', 50)|int }},
-        sniffing: {{ risks.get('sniffing', 50)|int }},
-        waf: {{ risks.get('waf', 50)|int }}
-    };
-
-    new Chart(ctx, {
-        type: 'radar',
-        data: {
-            labels: ['SSL/MITM', 'Anti-XSS', 'Clickjack', 'Sniffing', 'WAF/CDN'],
-            datasets: [{
-                label: 'Protection',
-                data: [riskData.mitm, riskData.xss, riskData.clickjacking, riskData.sniffing, riskData.waf],
-                backgroundColor: ssToken('accent-fg', 0.10),
-                borderColor: ssToken('accent-fg'),
-                borderWidth: 1.5,
-                pointBackgroundColor: ssToken('surface'),
-                pointBorderColor: ssToken('accent-fg'),
-                pointRadius: 2.5
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: chartAnimation,
-            scales: {
-                r: {
-                    angleLines: { color: ssToken('line') },
-                    grid: { color: ssToken('line') },
-                    pointLabels: { color: ssToken('fg-muted'), font: chartFont(11) },
-                    ticks: { display: false },
-                    suggestedMin: 0, suggestedMax: 100
-                }
-            },
-            plugins: { legend: { display: false } }
-        }
-    });
-
-    // 2. MARKDOWN BOLD — construit en nœuds DOM (jamais innerHTML : texte LLM non fiable)
-    document.querySelectorAll('.markdown-text').forEach(el => {
-        const parts = el.textContent.split(/\*\*(.*?)\*\*/g);
-        el.textContent = '';
-        parts.forEach((part, i) => {
-            if (i % 2 === 1) {
-                const strong = document.createElement('strong');
-                strong.className = 'font-semibold text-fg';
-                strong.textContent = part;
-                el.appendChild(strong);
-            } else {
-                el.appendChild(document.createTextNode(part));
-            }
-        });
-    });
-</script>
-
-<script>
-    // 3. BAR CHART CONFIGURATION (Vulnerabilities synthesis)
-    // Barème v2 : comptes calculés côté template depuis score_breakdown + données (null sur un ancien audit).
-    const vulnerabilityV2Counts = {{ v2_counts|tojson }};
-    // Repli v1 : ancienne logique sur score_details
-    const vulnerabilityDetails = {{ (scan.get('score_details') or [])|tojson }};
-    const vulnerabilityMissingHeaders = {{ (scan.get('missing_headers') or [])|tojson }};
-    const vulnerabilityCookies = {{ (scan.get('cookies_security') or [])|tojson }};
-    const vulnerabilitySslValid = {{ 'true' if ssl.get('valid') else 'false' }};
-
-    function getVulnerabilityCounts(details, missingHeaders, cookies, sslValid, v2Counts) {
-        // v2 : CRITIQUE = faille plafonnante · MOYEN = déduction ≥ 12 · FAIBLE = déduction ≤ 10
-        if (v2Counts) {
-            return { critical: Number(v2Counts.critical) || 0, medium: Number(v2Counts.medium) || 0, low: Number(v2Counts.low) || 0 };
-        }
-
-        const counts = { critical: 0, medium: 0, low: 0 };
-
-        details.forEach((item) => {
-            const match = String(item).match(/^-(\d+)\s*pts/);
-            if (!match) return;
-
-            const penalty = Number(match[1]);
-            if (penalty >= 50) counts.critical += 1;
-            else if (penalty >= 15) counts.medium += 1;
-            else counts.low += 1;
-        });
-
-        if (!sslValid) counts.critical += 1;
-
-        missingHeaders.forEach(() => {
-            counts.low += 1;
-        });
-
-        cookies.forEach((cookie) => {
-            if (String(cookie).includes('❌') || String(cookie).toLowerCase().includes('insecure')) {
-                counts.medium += 1;
-            }
-        });
-
-        // Aucun finding = 0 partout (plus de faux « 1 faible » sur un site sans défaut)
-        return counts;
-    }
-
-    const vulnerabilityCounts = getVulnerabilityCounts(
-        vulnerabilityDetails,
-        vulnerabilityMissingHeaders,
-        vulnerabilityCookies,
-        vulnerabilitySslValid,
-        vulnerabilityV2Counts
-    );
-
-    // KPI du hero : un zéro n'est pas un risque, il passe en neutre
-    const setCount = (id, n) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.textContent = n;
-        el.classList.toggle(el.dataset.tone, n !== 0);
-        el.classList.toggle('text-fg-muted', n === 0);
-    };
-    setCount('criticalCount', vulnerabilityCounts.critical);
-    setCount('mediumCount', vulnerabilityCounts.medium);
-    setCount('lowCount', vulnerabilityCounts.low);
-
-    const vulnerabilityCtx = document.getElementById('vulnerabilityChart');
-    vulnerabilityCtx.setAttribute('aria-label',
-        `Failles par sévérité : ${vulnerabilityCounts.critical} critique(s), ${vulnerabilityCounts.medium} moyenne(s), ${vulnerabilityCounts.low} faible(s)`);
-    new Chart(vulnerabilityCtx, {
-        type: 'bar',
-        data: {
-            labels: ['Critiques', 'Moyennes', 'Faibles'],
-            datasets: [{
-                label: 'Failles',
-                data: [vulnerabilityCounts.critical, vulnerabilityCounts.medium, vulnerabilityCounts.low],
-                backgroundColor: [ssToken('critical', 0.2), ssToken('medium', 0.2), ssToken('low', 0.2)],
-                borderColor: [ssToken('critical'), ssToken('medium'), ssToken('low')],
-                borderWidth: 1,
-                borderRadius: 3,
-                maxBarThickness: 36
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: chartAnimation,
-            scales: {
-                x: {
-                    grid: { display: false },
-                    border: { color: ssToken('line') },
-                    ticks: { color: ssToken('fg-muted'), font: chartFont(11, SANS) }
-                },
-                y: {
-                    beginAtZero: true,
-                    suggestedMax: 1,
-                    precision: 0,
-                    border: { display: false },
-                    grid: { color: ssToken('line') },
-                    ticks: { color: ssToken('fg-subtle'), font: chartFont(11), stepSize: 1 }
-                }
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: ssToken('surface'),
-                    borderColor: ssToken('line'),
-                    borderWidth: 1,
-                    titleColor: ssToken('fg'),
-                    bodyColor: ssToken('fg-muted'),
-                    bodyFont: chartFont(11, SANS),
-                    titleFont: { size: 11, family: SANS, weight: '600' }
-                }
-            }
-        }
-    });
-</script>
 {% endblock %}
