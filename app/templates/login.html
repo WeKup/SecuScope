@@ -1,71 +1,33 @@
 {% extends "base.html" %}
 
+{% block title %}Connexion IA — SecuScope{% endblock %}
+
 {% block content %}
-<div class="flex items-center justify-center min-h-[75vh]">
-    <div id="loginCard" class="bg-slate-900/40 border border-slate-800/80 p-8 rounded-xl shadow-2xl w-full max-w-md opacity-0 transition-opacity">
-        <div class="text-center mb-6">
-            <div class="inline-flex items-center justify-center w-12 h-12 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xl mb-4">
-                <i class="fas fa-shield-alt"></i>
-            </div>
-            <h1 class="text-2xl font-bold tracking-tight text-white">SecuScope Engine</h1>
-            <p class="text-slate-400 text-xs mt-1">Configurez votre instance d'analyse IA passive</p>
-        </div>
+<div class="landing">
+    <div class="glass spot lcard rise" style="animation-delay:.05s">
+        <h1>Configurer l'analyse IA</h1>
+        <p class="say">Choisissez le modèle et renseignez votre clé Gemini pour générer le rapport de chaque audit.</p>
 
         {% if error %}
-        <div class="mb-5 p-3 bg-red-950/30 border border-red-900/50 text-red-200 rounded-lg text-center text-xs font-mono">
-            <i class="fas fa-exclamation-triangle text-red-400 mr-1"></i> {{ error }}
-        </div>
+        <div class="errbox" role="alert"><span class="i" aria-hidden="true">!</span><span>{{ error }}</span></div>
         {% endif %}
 
-        <form action="{{ url_for('main.login') }}" method="POST" class="space-y-5">
+        <form action="{{ url_for('main.login') }}" method="POST">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 
-            <div>
-                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Modèle IA</label>
-                <div class="relative">
-                    <select name="model_id"
-                        class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 appearance-none font-mono">
-                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommandé)</option>
-                        <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite (Éco)</option>
-                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (Legacy)</option>
-                    </select>
-                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-500">
-                        <i class="fas fa-chevron-down text-xs"></i>
-                    </div>
-                </div>
-            </div>
+            <label class="lb" for="model_id">Modèle IA</label>
+            <select id="model_id" name="model_id" class="input">
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (recommandé)</option>
+                <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite (éco)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash (legacy)</option>
+            </select>
 
-            <div>
-                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Clé API Google Gemini</label>
-                <div class="relative">
-                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-600">
-                        <i class="fas fa-key text-xs"></i>
-                    </span>
-                    <input type="password" name="api_key" required placeholder="AIzaSy..."
-                        class="w-full bg-slate-950 border border-slate-800 text-slate-200 rounded-lg p-3 pl-9 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 placeholder-slate-600 font-mono">
-                </div>
-                <div class="mt-2 flex items-start gap-1.5 text-[10px] text-slate-500 leading-normal">
-                    <i class="fas fa-info-circle text-blue-500/80 mt-0.5"></i>
-                    <p>La clé est conservée uniquement en mémoire de session pour les requêtes de rapport d'audit.</p>
-                </div>
-            </div>
+            <label class="lb" for="api_key">Clé API Google Gemini</label>
+            <input type="password" id="api_key" name="api_key" class="input" required placeholder="AIzaSy..." autocomplete="off">
+            <p class="hint">La clé reste en mémoire de session et ne sert qu'à générer les rapports d'audit.</p>
 
-            <button type="submit"
-                class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg text-sm transition-colors shadow-md hover:shadow-blue-600/10">
-                Initialiser l'instance
-            </button>
+            <button type="submit" class="btn">Initialiser la session</button>
         </form>
     </div>
 </div>
-
-<script type="module">
-    // Entrance Animation via Motion CDN
-    import('https://cdn.jsdelivr.net/npm/motion@latest/+esm')
-        .then(({ animate }) => {
-            animate('#loginCard', { opacity: [0, 1], y: [16, 0] }, { duration: 0.5, easing: 'ease-out' });
-        })
-        .catch(() => {
-            document.getElementById('loginCard').classList.remove('opacity-0');
-        });
-</script>
 {% endblock %}

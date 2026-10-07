@@ -1,224 +1,86 @@
 {% extends "base.html" %}
 
-{% block head %}
-<!-- GSAP Library for the real-time scan loader -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-<style>
-    /* Custom styles for the scanning steps */
-    .step-item {
-        transition: color 0.3s ease;
-    }
-    .glitch-text {
-        text-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
-    }
-</style>
-{% endblock %}
+{% block title %}Nouveau scan — SecuScope{% endblock %}
 
 {% block content %}
-<div id="landingContainer" class="flex flex-col items-center justify-center min-h-[75vh] py-8">
-    <div class="text-center max-w-2xl w-full px-4">
-        
-        <!-- Badge -->
-        <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold tracking-wide mb-6 uppercase">
-            <i class="fas fa-radar"></i> Scanner externe non intrusif
-        </div>
-        
-        <h1 class="text-4xl font-extrabold tracking-tight text-white mb-4">
-            SecuScope<span class="text-blue-500 font-light">.io</span>
-        </h1>
-        <p class="text-slate-400 text-sm max-w-md mx-auto mb-8 font-normal leading-relaxed">
-            Analysez instantanément la posture de sécurité publique d'un domaine (WAF, SSL, DNS). Sans aucune intrusion.
-        </p>
+<div class="landing">
+    <div id="formCard" class="glass spot lhero rise g-x" style="animation-delay:.05s">
+        <div>
+            <h1>Auditez la posture de sécurité d'un domaine.</h1>
+            <p class="say">TLS, en-têtes HTTP, DNS, cookies et protections WAF/CDN, notés sur 100. Audit externe non intrusif : aucune exploitation, seulement ce que le domaine expose publiquement.</p>
 
-        <!-- Error Card -->
-        {% if error %}
-        <div class="w-full max-w-lg mx-auto mb-6 p-4 rounded-lg bg-red-950/20 border border-red-900/60 text-red-200 text-xs font-mono flex items-center gap-2">
-            <i class="fas fa-exclamation-triangle text-red-400 text-sm"></i> 
-            <span class="flex-grow text-left">{{ error }}</span>
-        </div>
-        {% endif %}
+            {% if error %}
+            <div class="errbox" role="alert"><span class="i" aria-hidden="true">!</span><span>{{ error }}</span></div>
+            {% endif %}
 
-        <!-- Form Card Container -->
-        <div id="formCard" class="w-full max-w-lg mx-auto bg-slate-900/40 border border-slate-800/80 p-6 rounded-xl shadow-2xl relative z-10">
-            <form method="POST" id="scanForm" class="flex flex-col gap-4">
+            <form method="POST" id="scanForm" class="scanform">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-
-                <div class="flex flex-col sm:flex-row gap-2">
-                    <div class="relative flex-grow">
-                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-500">
-                            <i class="fas fa-globe text-xs"></i>
-                        </span>
-                        <input type="text" name="domain" placeholder="example.com" required
-                            class="w-full p-3.5 pl-9 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none placeholder-slate-600 transition-all font-mono">
-                    </div>
-
-                    <button type="submit" id="scanBtn"
-                        class="px-6 py-3.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg transition-all whitespace-nowrap shadow-md flex items-center justify-center gap-2">
-                        <i class="fas fa-search text-xs"></i>
-                        <span>Lancer l'audit</span>
-                    </button>
+                <div class="field">
+                    <label for="domain" class="sr-only">Domaine à auditer</label>
+                    <input type="text" id="domain" name="domain" class="input" placeholder="example.com" required autocomplete="off" autocapitalize="off" spellcheck="false">
+                    <button type="submit" id="scanBtn" class="btn">Auditer le domaine</button>
                 </div>
-
-                <div class="text-left flex items-start gap-2.5 mt-2">
-                    <input type="checkbox" name="legal_consent" id="legal_consent" required 
-                        class="w-4 h-4 rounded border-slate-850 bg-slate-950 text-blue-600 focus:ring-blue-500 mt-0.5">
-                    <label for="legal_consent" class="text-[11px] text-slate-400 leading-normal">
-                        Je certifie être propriétaire de ce domaine ou disposer d'une autorisation
-écrite pour effectuer cet audit de sécurité externe.
-                    </label>
-                </div>
+                <label class="consent" for="legal_consent">
+                    <input type="checkbox" name="legal_consent" id="legal_consent" required>
+                    <span>Je certifie être propriétaire de ce domaine ou disposer d'une autorisation écrite pour effectuer cet audit de sécurité externe.</span>
+                </label>
             </form>
-        </div>
 
-        <!-- Real-time Scan Loader Card (Initially Hidden) -->
-        <div id="loadingMessage" class="hidden w-full max-w-lg mx-auto bg-slate-950/90 border border-slate-850 p-6 rounded-xl shadow-2xl mt-6 text-left font-mono">
-            <div class="flex items-center justify-between border-b border-slate-850 pb-3 mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></span>
-                    <span class="text-[11px] text-blue-400 uppercase tracking-wider font-semibold">Audit de sécurité externe</span>
-                </div>
-            </div>
-
-            <!-- Steps Progress Logs -->
-            <div class="space-y-3.5 text-xs text-slate-500">
-                <div class="step-item flex items-center justify-between gap-3" id="step1">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Résolution DNS et filtrage SSRF</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-                <div class="step-item flex items-center justify-between gap-3" id="step2">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Diagnostic SSL/TLS et expirations</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-                <div class="step-item flex items-center justify-between gap-3" id="step3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Audit des entêtes HTTP</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-                <div class="step-item flex items-center justify-between gap-3" id="step4">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Analyse de sécurité des cookies</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-                <div class="step-item flex items-center justify-between gap-3" id="step5">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Détection signatures WAF & CDN</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-                <div class="step-item flex items-center justify-between gap-3" id="step6">
-                    <div class="flex items-center gap-2.5">
-                        <span class="step-icon"><i class="far fa-circle text-slate-700"></i></span>
-                        <span>Génération cognitive du rapport IA</span>
-                    </div>
-                    <span class="step-time text-[10px] text-slate-750"></span>
-                </div>
-            </div>
-
-            <!-- Simulated live logs stream -->
-            <div class="mt-5 pt-3.5 border-t border-slate-850 text-[10px] text-slate-650 h-8 overflow-hidden relative">
-                <div id="liveLogs" class="absolute bottom-0 left-0 right-0 flex flex-col gap-0.5">
-                    <!-- Javascript will append logs here -->
-                </div>
+            <div class="lfacts">
+                <span class="chip">TLS <b>35%</b></span>
+                <span class="chip">en-têtes <b>25%</b></span>
+                <span class="chip">DNS <b>25%</b></span>
+                <span class="chip">cookies <b>15%</b></span>
             </div>
         </div>
 
-        <!-- Passive indicators bar -->
-        <div class="mt-12 flex flex-wrap justify-center gap-6 text-[10px] text-slate-500 font-mono uppercase tracking-widest">
-            <span class="flex items-center gap-1.5"><i class="fas fa-search text-emerald-500"></i> Diagnostic </span>
-            <span class="flex items-center gap-1.5"><i class="fas fa-shield-alt text-blue-500"></i> Protection WAF</span>
-            <span class="flex items-center gap-1.5"><i class="fas fa-brain text-purple-500"></i> Synthèse Cognitive</span>
+        <div class="lseal">
+            <div class="sealwrap" role="img" aria-label="Sceau en attente de verdict">
+                <div class="halo"></div>
+                <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="0" aria-hidden="true"></svg>
+                <div class="mid" aria-hidden="true"><div class="g">?</div><div class="s">— / 100</div><div class="cap">EN ATTENTE</div></div>
+            </div>
         </div>
+    </div>
 
+    <div id="loadingMessage" class="glass loader" hidden role="status" aria-live="polite">
+        <div class="lt"><span class="dot" aria-hidden="true"></span><span id="loadTarget">Audit en cours</span><em id="elapsed" style="margin-left:auto;font-style:normal;color:var(--faint)">0,0 s</em></div>
+        <div id="steps">
+            <div class="step" data-step><span><i>○</i>Résolution DNS et filtrage SSRF</span></div>
+            <div class="step" data-step><span><i>○</i>Diagnostic SSL/TLS et expirations</span></div>
+            <div class="step" data-step><span><i>○</i>Audit des en-têtes HTTP</span></div>
+            <div class="step" data-step><span><i>○</i>Analyse de sécurité des cookies</span></div>
+            <div class="step" data-step><span><i>○</i>Détection signatures WAF &amp; CDN</span></div>
+            <div class="step" data-step><span><i>○</i>Génération du rapport IA</span></div>
+        </div>
+        <div class="loglines" id="liveLogs"></div>
     </div>
 </div>
 
 <script>
-    document.getElementById('scanForm').addEventListener('submit', function (e) {
-        // 1. On récupère les éléments
-        const formCard = document.getElementById('formCard');
-        const loaderCard = document.getElementById('loadingMessage');
+    // Animation d'attente : séquence indicative, la redirection serveur reste maître du rythme réel.
+    document.getElementById('scanForm').addEventListener('submit', () => {
+        const form = document.getElementById('formCard'), loader = document.getElementById('loadingMessage');
+        document.getElementById('loadTarget').textContent = 'Audit de ' + (document.getElementById('domain').value.trim() || 'la cible');
+        form.hidden = true; loader.hidden = false;
 
-        // 2. On masque la carte formulaire et on affiche le chargeur terminal
-        formCard.classList.add('hidden');
-        loaderCard.classList.remove('hidden');
+        const steps = [...document.querySelectorAll('[data-step]')];
+        const timings = [700, 900, 1100, 800, 1300]; // rythme indicatif de l'affichage, pas des mesures
+        const t0 = performance.now(), clock = document.getElementById('elapsed');
+        setInterval(() => { clock.textContent = ((performance.now() - t0) / 1000).toFixed(1).replace('.', ',') + ' s'; }, 100);
+        const logs = document.getElementById('liveLogs');
+        const log = t => { const d = document.createElement('div'); d.textContent = '> ' + t; logs.appendChild(d); while (logs.children.length > 3) logs.firstChild.remove(); };
+        const mark = (s, cls, glyph) => { s.className = 'step ' + cls; s.querySelector('i').textContent = glyph; };
 
-        // 3. Initialisation de la séquence d'animations avec GSAP
-        const tl = gsap.timeline();
-        
-        // Helper to update step to "active" state
-        function setActive(stepId) {
-            const stepEl = document.getElementById(stepId);
-            stepEl.classList.remove('text-slate-500');
-            stepEl.classList.add('text-blue-400', 'font-medium');
-            stepEl.querySelector('.step-icon').innerHTML = '<i class="fas fa-spinner fa-spin text-blue-400"></i>';
-            appendLog(`[PROBE] Lancement du sous-système de diagnostics pour ${stepId}...`);
-        }
-
-        // Helper to update step to "completed" state
-        function setComplete(stepId, duration) {
-            const stepEl = document.getElementById(stepId);
-            stepEl.classList.remove('text-blue-400', 'font-medium');
-            stepEl.classList.add('text-slate-300');
-            stepEl.querySelector('.step-icon').innerHTML = '<i class="fas fa-check-circle text-emerald-500"></i>';
-            stepEl.querySelector('.step-time').textContent = `+${duration}ms`;
-            appendLog(`[SUCCESS] Analyse effectuée avec succès pour ${stepId}.`);
-        }
-
-        function appendLog(text) {
-            const container = document.getElementById('liveLogs');
-            const line = document.createElement('div');
-            line.className = 'truncate';
-            line.textContent = `> ${text}`;
-            container.appendChild(line);
-            
-            // Limit logs displayed
-            if (container.children.length > 3) {
-                container.removeChild(container.firstChild);
-            }
-        }
-
-        // Séquence temporelle animée par GSAP (durée totale simulée ~5.5s maximum)
-        tl.call(() => setActive('step1'))
-          .to({}, { duration: 0.7 })
-          .call(() => setComplete('step1', 420))
-          
-          .call(() => setActive('step2'))
-          .to({}, { duration: 0.9 })
-          .call(() => setComplete('step2', 680))
-          
-          .call(() => setActive('step3'))
-          .to({}, { duration: 1.1 })
-          .call(() => setComplete('step3', 890))
-          
-          .call(() => setActive('step4'))
-          .to({}, { duration: 0.8 })
-          .call(() => setComplete('step4', 510))
-          
-          .call(() => setActive('step5'))
-          .to({}, { duration: 1.3 })
-          .call(() => setComplete('step5', 1040))
-          
-          .call(() => setActive('step6'))
-          .to({}, { duration: 10.0 }); // Long duration until backend redirect
+        let i = 0;
+        const next = () => {
+            if (i > 0) mark(steps[i - 1], 'ok', '✓');
+            if (i >= steps.length) return;
+            log(steps[i].firstElementChild.lastChild.textContent.trim()); mark(steps[i], 'act', '●');
+            const wait = timings[i++];
+            if (wait) setTimeout(next, wait);
+        };
+        next();
     });
-</script>
-
-<script type="module">
-    // Page Entrance Animation via Motion CDN
-    import('https://cdn.jsdelivr.net/npm/motion@latest/+esm')
-        .then(({ animate }) => {
-            animate('#landingContainer', { opacity: [0, 1], y: [16, 0] }, { duration: 0.55, easing: 'ease-out' });
-        });
 </script>
 {% endblock %}
