@@ -74,6 +74,9 @@
         {% set _ = ded_by_cat.update({key: lookup}) %}
     {% endfor %}
 {% endif %}
+{# Analyse incomplète : une catégorie n'a pas pu être lue (hors scan interrompu, déjà signalé), ou TLS partiel #}
+{% set unread_cats = cat_rows|rejectattr('evaluated')|map(attribute='label')|list %}
+{% set incomplete_parts = (unread_cats + (['TLS partiel'] if tls_unknown else [])) if has_v2 and not crit_failure else [] %}
 {% set infra_bonus = breakdown.get('infra_bonus')|int if has_v2 else 0 %}
 {% set raw_score = breakdown.get('raw_score', score)|int if has_v2 else score %}
 {% set cap = breakdown.get('cap') if has_v2 and breakdown.get('cap') is mapping else none %}
@@ -352,17 +355,18 @@
             <div class="sealwrap" role="img" aria-label="Score {{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné (score calculé {{ raw_score }}){% endif %}">
                 <div class="halo"></div>
                 <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="{{ score }}" aria-hidden="true"></svg>
-                <div class="mid" aria-hidden="true"><div class="g">{{ grade }}</div><div class="s"><span id="score">{{ score }}</span> / 100</div><div class="cap">VERDICT CERTIFIÉ</div></div>
+                <div class="mid" aria-hidden="true"><div class="g">{{ grade }}</div><div class="s"><span id="score">{{ score }}</span> / 100</div><div class="cap">VERDICT {{ 'PARTIEL' if incomplete_parts else 'CERTIFIÉ' }}</div></div>
             </div>
             <div class="vmeta">
-                <h1 id="auditDomain">{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}.</h1>
-                <p class="say">{{ headline[1] }}</p>
+                <h1 id="auditDomain">{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}{% if incomplete_parts %}, analyse incomplète{% endif %}.</h1>
+                <p class="say">{% if incomplete_parts %}La note ne porte que sur ce qui a pu être observé : {{ incomplete_parts|join(', ') }} non lu{{ 's' if incomplete_parts|length > 1 }}, sans déduction.{% else %}{{ headline[1] }}{% endif %}</p>
                 <div class="facts">
                     <span class="chip"><b>{{ audit.domain }}</b></span>
                     {% if waf_found %}<span class="chip infra">● {{ waf }}</span>{% endif %}
                     <span class="chip">serveur <b>{{ scan.get('server', '—') }}</b></span>
                     <span class="chip">IP <b>{{ scan.get('ip', '—') }}</b></span>
                     {% if audit.timestamp %}<span class="chip">analysé <b>{{ audit.timestamp.strftime('%d.%m · %H:%M') }} UTC</b></span>{% endif %}
+                    {% if incomplete_parts %}<span class="chip warn" title="Non lu ou partiel : {{ incomplete_parts|join(', ') }}. La note ne porte que sur ce qui a pu être observé.">Analyse incomplète · {{ incomplete_parts|join(', ') }}</span>{% endif %}
                     {% if v2_counts %}
                     <span class="chip k-{{ 'f' if v2_counts.critical else 'z' }}">critiques <b>{{ v2_counts.critical }}</b></span>
                     <span class="chip k-{{ 'c' if v2_counts.medium else 'z' }}">moyennes <b>{{ v2_counts.medium }}</b></span>

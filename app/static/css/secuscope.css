@@ -327,3 +327,6 @@ select.input option{background:#0d0f16;}
 .own-key summary::before{content:"+";display:inline-block;width:14px;color:var(--faint);}
 .own-key[open] summary::before{content:"−";}
 .own-key summary:hover{color:var(--tx);}
+
+/* analyse incomplète : avertissement sur le verdict */
+.chip.warn{border-color:rgba(242,177,61,.4);background:rgba(242,177,61,.1);color:#f5ce84;}

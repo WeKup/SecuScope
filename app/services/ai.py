@@ -153,12 +153,17 @@ def _severity_summary(scan_data):
     def fmt(items):
         return " ; ".join(items) if items else "aucune"
 
+    unread = [str(cat.get("label")) for cat in (categories or {}).values()
+              if isinstance(cat, dict) and cat.get("evaluated") is False]
     lines = [
         f"- Grade : {scan_data.get('score', '?')} ({scan_data.get('numeric_score', 'N/A')}/100)",
         f"- CRITIQUES ({len(buckets['critical'])}), failles plafonnantes : {fmt(buckets['critical'])}",
         f"- MOYENNES ({len(buckets['medium'])}) : {fmt(buckets['medium'])}",
         f"- FAIBLES ({len(buckets['low'])}) : {fmt(buckets['low'])}",
     ]
+    if unread and not scan_data.get("critical_failure"):
+        lines.append(f"- Catégories NON LUES (analyse incomplète) : {', '.join(unread)}. "
+                     "Ne conclus rien sur elles et signale que l'analyse est incomplète.")
     return "\n".join(lines)
 
 
