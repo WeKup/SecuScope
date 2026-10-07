@@ -503,17 +503,33 @@
         </div>
 </section>
 
-<!-- 6. DÉTAIL : colonnes CSS, empilement équilibré sans panneau orphelin -->
+<!-- 6. FEED : à corriger en priorité -->
+<section>
+    <div class="glass finds rise" style="animation-delay:.54s">
+        <div class="head">À corriger en priorité<span>{{ finds|length }} point{{ 's' if finds|length > 1 }}</span></div>
+        {% for f in finds[:8] %}
+        <div class="find g-{{ {'critical': 'f', 'high': 'd', 'medium': 'c'}.get(f.tone, 'x') }}">
+            <span class="sev" aria-hidden="true"></span>
+            <div class="t">{{ f.title }}{% if f.detail %}<span>{{ f.detail }}</span>{% endif %}</div>
+            <span class="tag">{{ f.tag }}</span>
+        </div>
+        {% else %}
+        <p class="empty empty-row">Aucun point bloquant observé sur ce scan.</p>
+        {% endfor %}
+    </div>
+</section>
+
+<!-- 7. DÉTAIL : colonnes CSS, empilement équilibré sans panneau orphelin -->
 <section>
     <div class="cols">
         {% set tcat = cat_by_key.get('tls') %}
-        <div class="glass spot panel rise" style="animation-delay:.48s">
+        <div class="glass spot panel rise" style="animation-delay:.60s">
             <div class="ph"><h2>TLS / SSL</h2>{% if tcat %}<span class="sc">{{ tcat.score }}/100 · poids {{ tcat.weight }}%{% if tls_unknown %} · <span class="partial">partielle</span>{% endif %}</span>{% endif %}</div>
             {% for r in tls_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
         </div>
 
         {% set dcat = cat_by_key.get('dns') %}
-        <div class="glass spot panel rise" style="animation-delay:.54s">
+        <div class="glass spot panel rise" style="animation-delay:.66s">
             <div class="ph"><h2>DNS &amp; messagerie</h2>
                 {% if dns_rows and dcat %}<span class="sc">{{ dcat.score }}/100 · poids {{ dcat.weight }}%</span>
                 {% elif not dns_rows %}<span class="pill">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
@@ -528,7 +544,7 @@
             {% endif %}
         </div>
 
-        <div class="glass spot panel rise" style="animation-delay:.56s">
+        <div class="glass spot panel rise" style="animation-delay:.72s">
             <div class="ph"><h2>En-têtes de sécurité</h2><span class="sc">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span></div>
             {% for r in header_rows|sort(attribute='rank') %}
                 {{ check_line(r.name, r.tone, r.label, '' if r.group == 'active' else r.raw, (r.impact|abs) if r.impact is number and r.impact < 0 else none) }}
@@ -537,7 +553,7 @@
             {% endfor %}
         </div>
 
-        <div class="glass spot panel rise" style="animation-delay:.6s">
+        <div class="glass spot panel rise" style="animation-delay:.78s">
             <div class="ph"><h2>Cookies</h2><span class="sc">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span></div>
             {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
             {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
@@ -545,7 +561,7 @@
         </div>
 
         {% if not has_v2 %}
-        <div class="glass spot panel rise" style="animation-delay:.68s">
+        <div class="glass spot panel rise" style="animation-delay:.84s">
             <div class="ph"><h2>Calcul du score</h2><span class="sc">barème v1 · base 50</span></div>
             {% for detail_raw in (scan.get('score_details') or []) %}
                 {% set detail = detail_raw|string %}
@@ -566,20 +582,8 @@
 </section>
 
 
-<!-- 7. FEED : à corriger en priorité -->
+<!-- 8. PIED DE PAGE -->
 <section>
-    <div class="glass finds rise" style="animation-delay:.72s">
-        <div class="head">À corriger en priorité<span>{{ finds|length }} point{{ 's' if finds|length > 1 }}</span></div>
-        {% for f in finds[:8] %}
-        <div class="find g-{{ {'critical': 'f', 'high': 'd', 'medium': 'c'}.get(f.tone, 'x') }}">
-            <span class="sev" aria-hidden="true"></span>
-            <div class="t">{{ f.title }}{% if f.detail %}<span>{{ f.detail }}</span>{% endif %}</div>
-            <span class="tag">{{ f.tag }}</span>
-        </div>
-        {% else %}
-        <p class="empty empty-row">Aucun point bloquant observé sur ce scan.</p>
-        {% endfor %}
-    </div>
     <div class="foot">Rapport généré par SecuScope · audit externe non intrusif · {{ mc.total }} contrôles exécutés</div>
 </section>
 
