@@ -121,7 +121,6 @@ Correction appliquee:
 Constat:
 
 - Plusieurs resolutions DNS implicites et timeouts disperses.
-- WafW00F peut etre lent.
 - `requests.Session` etait appele avec `impersonate` a la creation, ce qui n'est pas necessaire.
 
 Correction appliquee:

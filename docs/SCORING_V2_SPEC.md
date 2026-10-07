@@ -38,14 +38,15 @@ Système additif : base 50, on empile des `+N/-N pts`, borné à 100. Défauts :
 | Certificat invalide / expiré / mismatch | −40 (+ cap D) |
 | SSLv2 ou SSLv3 accepté | −40 (+ cap C) |
 | TLS 1.0 ou 1.1 accepté | −20 |
-| Cipher suite **cassée** (RC4, DES, EXPORT, NULL, MD5, anonyme) | −25 |
-| Cipher suite **legacy** (3DES) | −15 |
-| Pas de forward secrecy | −20 |
-
-> Distinction des ciphers : RC4/DES/EXPORT/NULL sont réellement cassés (attaque
-> pratique) → −25. 3DES est seulement vieux (Sweet32, difficile à exploiter) →
-> −15. SSL Labs fait la même distinction.
+| Cipher suite **cassée** (RC4, DES, EXPORT, NULL, MD5, anonyme) | −25 (+ cap C) |
+| Cipher suite **legacy** (3DES) | −15 (pas de cap) |
+| Forward secrecy absente (**seulement si TLS 1.2 et 1.3 ont été analysés** sans suite ECDHE/DHE ; sinon indéterminé, aucune déduction) | −20 |
 | TLS 1.3 non supporté | −10 |
+
+> Distinction des ciphers : RC4/DES/EXPORT/NULL/MD5/anonyme sont réellement cassés
+> (attaque pratique) → −25 et plafond C, comme SSLv2/SSLv3. 3DES est seulement vieux
+> (Sweet32, difficile à exploiter) → −15, sans plafond. SSL Labs fait la même
+> distinction.
 
 ### En-têtes HTTP (déductions = 100 au total → site sans rien = 0)
 | En-tête absent | Déduction |
@@ -93,10 +94,26 @@ Système additif : base 50, on empile des `+N/-N pts`, borné à 100. Défauts :
 
 ## 5. Bonus infrastructure
 
-WAF/CDN détecté (Cloudflare, Akamai, Google Edge...) = **+5** (plafonné à **+10**
-si plusieurs couches). Justification : un WAF filtre réellement des attaques
-(DoS/DDoS, patterns connus). Appliqué AVANT les caps → ne peut jamais racheter
-une faille grave ni transformer un site mal configuré en bon score.
+Chaque couche WAF/CDN **distincte et réellement identifiée** (Cloudflare, Akamai, Fastly,
+Amazon CloudFront, Azure Front Door...) = **+5**, plafonné à **+10**. Justification : un WAF
+filtre réellement des attaques (DoS/DDoS, patterns connus). Appliqué AVANT les caps → ne peut
+jamais racheter une faille grave ni transformer un site mal configuré en bon score.
+
+**Multi-couches** : on évalue tous les fournisseurs, on ne s'arrête pas au premier. Un même
+fournisseur détecté par plusieurs signaux (en-tête + CNAME + cookie) compte pour **une seule**
+couche. Ex. « Akamai + Azure Front Door » = +10.
+
+**Preuve exigée** (voir `app/services/signature.py`) : un en-tête exact ou une valeur d'en-tête en
+mot entier (`Server: gws`, `cf-ray`, `x-akamai-*`, `x-amz-cf-id`), un cookie à préfixe
+(`visid_incap_*`), un marqueur spécifique de page d'erreur, ou un CNAME vers un CDN (domaine du
+site, hôte final après redirection, chaîne). Si le passif n'a trouvé aucun vrai WAF/CDN, wafw00f
+est lancé en dernier recours. Ne comptent **pas** : l'émetteur du certificat, le PTR, les serveurs
+de noms et un simple nom de vendeur dans le corps d'une page. Héberger chez AWS, OVH ou Google ne
+donne aucun bonus. Sans preuve : « Non détecté », bonus 0.
+
+**Sans bonus** : un cache (Varnish), un routeur de plateforme (Heroku), une plateforme e-commerce
+(Shopify) ou un répartiteur de charge (AWS ELB) est affiché mais ne compte pas comme une couche,
+même à côté d'un vrai WAF/CDN. Ex. « Fastly + Varnish » = +5.
 
 ---
 
@@ -105,8 +122,10 @@ une faille grave ni transformer un site mal configuré en bon score.
 | Faille | Score maximum autorisé |
 |---|---|
 | HTTP en clair / HTTPS non forcé | **20** (F) — kill-switch |
+| Handshake TLS échoué (protocole ou cipher obsolète/incompatible, ex. RC4 seul) | **20** (F) — kill-switch, libellé distinct de « HTTP en clair » |
 | Certificat TLS invalide / expiré / mismatch | **59** (D) |
 | SSLv2 ou SSLv3 accepté | **79** (C) |
+| Cipher suite cassée acceptée (RC4, DES, EXPORT, NULL, MD5, anonyme) | **79** (C) |
 | AXFR ouvert | **79** (C) |
 
 Le cap prend le **minimum** entre le score calculé et le plafond de la pire
@@ -118,12 +137,35 @@ faille déclenchée.
 
 ```
 1. Pour chaque catégorie : note_cat = 100 − Σ déductions   (plancher 0)
-2. score = Σ (note_cat × poids_cat)                         # 0–100
+2. score = Σ (note_cat × poids_cat) / Σ poids_évalués        # 0–100
 3. score = score + bonus_infra                              # +5, max +10
 4. score = min(score, 100)
 5. score = min(score, plafond le plus bas déclenché par un cap)
 6. grade : A ≥ 90 · B 80–89 · C 60–79 · D 40–59 · F < 40
 ```
+
+### En-têtes non vérifiables
+
+Seuls « Présent » et « Manquant » sont des observations. Quand la réponse HTTPS n'a pas pu
+être lue (connexion coupée, délai dépassé), les six en-têtes sont « Non vérifiables » : aucune
+déduction, la catégorie En-têtes et la catégorie Cookies sont « non évaluées ». Un en-tête
+n'est jamais requalifié à cause d'une infrastructure détectée.
+
+### Catégories non évaluées
+
+Une catégorie qui n'a pas pu être mesurée est marquée `evaluated: false`, sans note
+(`score: null`) : elle n'entre pas dans la moyenne (les poids des autres sont
+renormalisés) et le dashboard l'affiche « Non évalué », jamais 100/100.
+
+| Catégorie | Non évaluée quand |
+|---|---|
+| TLS/SSL | scan interrompu (HTTPS non forcé) |
+| En-têtes HTTP | aucune réponse HTTP analysée, ou en-têtes non vérifiables |
+| DNS | contrôles DNS non exécutés |
+| Cookies | scan interrompu, ou réponse HTTPS non lue |
+
+Si aucune catégorie n'est évaluée (kill-switch HTTP en clair), le verdict est celui du
+plafond seul : **20 / F**.
 
 ---
 

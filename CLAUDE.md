@@ -22,7 +22,7 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
   waf_detected, server, headers, missing_headers, cookies_security, tech_stack,
   score_details, numeric_score`. Clés optionnelles `dns_security` et `tls_deep` :
   absentes du kill-switch et des anciens audits, toujours lues via `.get(..., {})`.
-- Routes CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`.
+- Routes CSRF : `/`, `/scan`, `/dashboard/<int:id>`, `/logout`. Tout est derrière connexion sauf `/` (login) et `/health`.
 - Scoring v2 (`docs/SCORING_V2_SPEC.md`) : 4 catégories /100 (TLS 35, en-têtes 25,
   DNS 25, cookies 15), bonus infra +5 (max +10), caps par faille grave, grade A–F.
   `scan_data` garde `numeric_score`, `score` et `score_details` (liste dégradée
@@ -43,9 +43,10 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 - `app/services/scoring.py` — `calculate_trust_score`.
 - `app/services/ai.py` — client google-genai, extraction JSON robuste, résumé DNS.
 - `app/services/signature.py` — WAF/INFRA/TECH/SECURITY signatures.
-- `app/models.py` — modèle `Audit`.
-- `app/templates/` — `base.html`, `login.html`, `index.html`, `dashboard.html`,
-  `components/vulnerability_chart.html`.
+- `app/models.py` — modèles `User` et `Audit`.
+- `app/cli.py` — `flask create-user` (seule voie de création de compte).
+- `app/static/` — `css/secuscope.css`, `js/secuscope.js` (design system).
+- `app/templates/` — `base.html`, `login.html`, `index.html`, `dashboard.html`.
 
 ## Conventions
 
