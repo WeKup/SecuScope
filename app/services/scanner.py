@@ -1,5 +1,6 @@
 from curl_cffi import requests
 import logging
+import os
 import re
 import time
 from contextlib import contextmanager
@@ -10,7 +11,7 @@ import dns.reversename
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import ipaddress
 from http.cookies import SimpleCookie
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from app.services.signature import (
     NON_PROTECTIVE_LAYERS,
     SECURITY_HEADERS,
@@ -21,7 +22,13 @@ from app.services.signature import (
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
-DNS_TIMEOUT = 3
+DNS_TIMEOUT = 3        # délai par serveur DNS (s), aussi utilisé pour les transferts AXFR
+DNS_LIFETIME = 8       # délai total d'une résolution (s)
+# Le résolveur Docker (127.0.0.11) expire sur certaines réponses TXT volumineuses (SPF) : on interroge des
+# résolveurs publics. 8.8.8.8 est volontairement absent : il TRONQUE les grosses réponses TXT (16 sur 37 pour
+# axa.com, SPF manquant), ce qui fabriquerait de faux « SPF absent ». DNS_RESOLVERS="" force le système.
+DNS_RESOLVERS = [r.strip() for r in os.getenv("DNS_RESOLVERS", "1.1.1.1,9.9.9.9").split(",") if r.strip()]
+MAX_REDIRECTS = 5      # sauts HTTP suivis avant d'analyser la réponse finale
 TCP_TIMEOUT = 3
 HTTP_TIMEOUT = 8
 LIGHT_WAF_TIMEOUT = 4
@@ -62,8 +69,10 @@ class _Timings(dict):
 
 def _build_resolver():
     resolver = dns.resolver.Resolver()
+    if DNS_RESOLVERS:
+        resolver.nameservers = DNS_RESOLVERS
     resolver.timeout = DNS_TIMEOUT
-    resolver.lifetime = DNS_TIMEOUT
+    resolver.lifetime = DNS_LIFETIME
     return resolver
 
 
@@ -142,6 +151,8 @@ def _provider_matches(sigs, headers_lower, cookie_names, body_lower, cnames):
             return True
     if any(name.startswith(pre) for name in cookie_names for pre in sigs.get("cookies", [])):
         return True
+    if any(re.fullmatch(pattern, name) for name in cookie_names for pattern in sigs.get("cookie_regex", [])):
+        return True
     if any(marker in body_lower for marker in sigs.get("body", [])):
         return True
     # CNAME : le signal le plus fiable (« qui protège ce site »). Pas de NS ni de PTR.
@@ -189,7 +200,7 @@ def _run_wafw00f(https_url, domain):
     Renvoie le nom du WAF, ou None (absent, échec ou délai dépassé). Elle tourne dans un thread
     borné par WAFW00F_TIMEOUT : à l'échéance on abandonne proprement, sans bloquer le scan."""
     def work():
-        detected = WAFW00F(https_url).identwaf(findall=False)
+        detected = WAFW00F(https_url, extraheaders={"User-Agent": UA_CHROME}).identwaf(findall=False)
         # « Cloudflare (Cloudflare Inc.) » -> « Cloudflare » : on garde le nom du produit
         return _canonical_layer(str(detected[0]).split(" (")[0].strip()) if detected else None
 
@@ -322,13 +333,60 @@ def get_ssl_info(domain):
 # HTTP (V12 - Avec Check HTTPS Forcé)
 # -------------------------------------------------------------------
 
-def _merged_response_headers(resp):
-    headers = {}
-    if hasattr(resp, "history") and resp.history:
-        for previous in resp.history:
-            headers.update(dict(previous.headers))
-    headers.update(dict(resp.headers))
-    return headers
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+
+
+class UnsafeRedirect(Exception):
+    """Une redirection pointe vers une adresse non publique : elle n'est pas suivie (anti-SSRF)."""
+
+
+def _redirect_target_is_public(host):
+    try:
+        return _is_public_ip(str(ipaddress.ip_address(host)))
+    except ValueError:
+        pass
+    ips = _resolve_records(host, "A") + _resolve_records(host, "AAAA")
+    return bool(ips) and all(_is_public_ip(ip) for ip in ips)
+
+
+def _follow_redirects(url, timeout):
+    """GET en suivant À LA MAIN les redirections 301/302/303/307/308 (MAX_REDIRECTS sauts).
+
+    Renvoie (réponse finale, réponses intermédiaires). Le suivi automatique de curl_cffi coupe la
+    connexion sur certains apex (axa.com -> www) et ne contrôlait pas les cibles des redirections :
+    ici chaque saut repart d'une requête neuve et son hôte doit résoudre vers des IP publiques."""
+    hops, current = [], url
+    for _ in range(MAX_REDIRECTS + 1):
+        resp = requests.get(current, headers=get_headers(), timeout=timeout,
+                            allow_redirects=False, impersonate="chrome120")
+        location = resp.headers.get("location")
+        if resp.status_code not in _REDIRECT_CODES or not location:
+            return resp, hops
+        hops.append(resp)
+        target = urljoin(current, location)
+        parsed = urlparse(target)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return resp, hops
+        if parsed.hostname != urlparse(current).hostname and not _redirect_target_is_public(parsed.hostname):
+            raise UnsafeRedirect(parsed.hostname)
+        current = target
+    return resp, hops  # trop de sauts : la dernière réponse est encore une redirection
+
+
+def _is_redirect(resp):
+    return resp.status_code in _REDIRECT_CODES and bool(resp.headers.get("location"))
+
+
+def _merge_hops(resp, hops):
+    """En-têtes et cookies de TOUTES les réponses de la chaîne : sert à repérer un WAF/CDN, dont la
+    signature peut n'apparaître que sur une redirection. Les contrôles de sécurité, eux, lisent
+    uniquement la réponse finale."""
+    headers, cookies = {}, {}
+    for r in [*hops, resp]:
+        headers.update(dict(r.headers))
+        for name in r.cookies.keys():
+            cookies[name] = True
+    return headers, cookies
 
 
 def _get_set_cookie_headers(headers):
@@ -389,22 +447,20 @@ def get_http_info(target_url, dns_info, domain):
         "failure": None, "http_readable": False, "waf_layers": [],
     }
 
-    session = requests.Session()
     timings = res["timings"] = _Timings()
 
     try:
         # 1. Test HTTPS Principal
         https_url = f"https://{domain}" if not target_url.startswith("https") else target_url
         with timings.phase("https_probe"):
-            resp = session.get(
-                https_url,
-                headers=get_headers(),
-                timeout=HTTP_TIMEOUT,
-                allow_redirects=True,
-                impersonate="chrome120",
-            )
-        all_headers = _merged_response_headers(resp)
-        headers_lower = {k.lower(): v for k, v in all_headers.items()}
+            resp, hops = _follow_redirects(https_url, HTTP_TIMEOUT)
+        if _is_redirect(resp):  # boucle ou chaîne trop longue : on n'analyse pas une réponse de redirection
+            res["details"].append(f"Plus de {MAX_REDIRECTS} redirections : réponse finale non lue")
+            return res
+        # Contrôles de sécurité : réponse FINALE. Détection WAF/CDN : toute la chaîne.
+        chain_headers, chain_cookies = _merge_hops(resp, hops)
+        all_headers = chain_headers
+        headers_lower = {k.lower(): v for k, v in resp.headers.items()}
 
         # Vérification redirection inverse (HTTPS -> HTTP)
         if resp.url.startswith("https://"):
@@ -434,10 +490,9 @@ def get_http_info(target_url, dns_info, domain):
             """Le site répond-il aussi en clair, sans redirection vers HTTPS ? (Enforce SSL)"""
             try:
                 with timings.phase("http_probe"):
-                    http_resp = requests.get(f"http://{domain}", headers=get_headers(), timeout=LIGHT_WAF_TIMEOUT,
-                                             allow_redirects=True, impersonate="chrome120")
+                    http_resp, _hops = _follow_redirects(f"http://{domain}", LIGHT_WAF_TIMEOUT)
                 return http_resp.status_code < 400 and http_resp.url.startswith("http://")
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, UnsafeRedirect):
                 return False
 
         def detect_waf():
@@ -449,7 +504,7 @@ def get_http_info(target_url, dns_info, domain):
                 cname_info = dict(dns_info)
                 if final_host and final_host != domain:
                     cname_info["cname"] = list(dns_info.get("cname", [])) + _cname_chain(final_host)
-                layers = _identify_waf_layers(all_headers, resp.cookies, resp.text, cname_info)
+                layers = _identify_waf_layers(all_headers, chain_cookies, resp.text, cname_info)
             if WAFW00F_AVAILABLE and all(layer in NON_PROTECTIVE_LAYERS for layer in layers):
                 with timings.phase("wafw00f"):
                     extra = _run_wafw00f(https_url, domain)
@@ -460,10 +515,9 @@ def get_http_info(target_url, dns_info, domain):
         def www_has_hsts():
             try:
                 with timings.phase("hsts_www"):
-                    www_resp = requests.get(f"https://www.{domain}", headers=get_headers(),
-                                            timeout=LIGHT_WAF_TIMEOUT, impersonate="chrome120")
+                    www_resp, _hops = _follow_redirects(f"https://www.{domain}", LIGHT_WAF_TIMEOUT)
                 return "strict-transport-security" in {k.lower() for k in www_resp.headers}
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, UnsafeRedirect):
                 return False
 
         # Pas de `with` : si le site répond en clair, on rend le verdict tout de suite sans attendre
@@ -508,10 +562,9 @@ def get_http_info(target_url, dns_info, domain):
             # Aucun HTTPS : si le site répond en clair, c'est du HTTP en clair, pas un site « inaccessible ».
             try:
                 with timings.phase("http_probe"):
-                    http_resp = requests.get(f"http://{domain}", headers=get_headers(), timeout=LIGHT_WAF_TIMEOUT,
-                                             allow_redirects=True, impersonate="chrome120")
+                    http_resp, _hops = _follow_redirects(f"http://{domain}", LIGHT_WAF_TIMEOUT)
                 served_in_clear = http_resp.status_code < 400 and http_resp.url.startswith("http://")
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, UnsafeRedirect):
                 served_in_clear = False
             if served_in_clear:
                 res["critical_failure"], res["failure"] = True, "http_clear"
@@ -536,6 +589,10 @@ def get_http_info(target_url, dns_info, domain):
                 res["details"].append("-100 pts: Handshake TLS échoué")
             except (socket.timeout, OSError):
                 res["details"].append("Connexion TLS impossible à établir : contrôles HTTP non vérifiables")
+
+    except UnsafeRedirect as unsafe:
+        logger.warning("Redirection non suivie sur %s : %s n'est pas une adresse publique", domain, unsafe)
+        res["details"].append("Redirection vers une adresse non publique : non suivie, contrôles HTTP non vérifiables")
 
     except requests.exceptions.Timeout:
         res["details"].append("Délai HTTP dépassé : contrôles HTTP non vérifiables")

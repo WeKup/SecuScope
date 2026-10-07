@@ -6,6 +6,7 @@
 #   header_prefixes préfixes de noms d'en-têtes (ex. x-akamai-*)
 #   header_values   {en-tête: [jetons]} ; le jeton doit être un MOT ENTIER dans la valeur (Server: gws)
 #   cookies         préfixes de noms de cookies (ex. visid_incap_123456)
+#   cookie_regex    motifs de noms de cookies, comparés en entier (ex. TS + hexadécimal pour F5 ASM)
 #   body            marqueurs SPÉCIFIQUES de pages d'erreur du produit ; jamais un simple nom de vendeur
 #   cname           domaines précis du CDN dans le CNAME du site : le signal le plus fiable
 #   aliases         noms sous lesquels wafw00f désigne ce fournisseur (pour dédoublonner)
@@ -72,6 +73,7 @@ WAF_SIGNATURES = {
         "headers": ["x-wa-info", "x-cshm"],
         "header_values": {"server": ["bigip", "big-ip"]},
         "cookies": ["bigipserver", "f5_cspm", "mrhint"],
+        "cookie_regex": [r"ts[0-9a-f]{6,}"],  # cookies F5 ASM : TS01918e36, TS24ded377027...
         "body": ["f5_cspm"],
         "cname": ["f5edge", "silverline"],
         "aliases": ["big-ip", "bigip", "f5"],

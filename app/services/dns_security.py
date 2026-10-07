@@ -12,7 +12,7 @@ import dns.query
 import dns.resolver
 import dns.zone
 
-from app.services.scanner import DNS_TIMEOUT, _is_public_ip
+from app.services.scanner import DNS_RESOLVERS, DNS_TIMEOUT, _build_resolver, _is_public_ip
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,7 @@ MAX_AXFR_NAMESERVERS = 5
 
 
 def _resolver():
-    resolver = dns.resolver.Resolver()
-    resolver.timeout = DNS_TIMEOUT
-    resolver.lifetime = DNS_TIMEOUT
-    return resolver
+    return _build_resolver()  # résolveurs publics partagés avec le scanner
 
 
 def _resolve(name, record_type):
@@ -37,6 +34,21 @@ def _resolve(name, record_type):
         return list(_resolver().resolve(name, record_type))
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
         return []
+
+
+def _txt_records_per_resolver(name):
+    """TXT vus par CHAQUE résolveur configuré. Un résolveur peut tronquer une grosse réponse : on ne
+    conclut à l'absence d'un enregistrement que si aucun d'eux ne le voit."""
+    texts = []
+    for nameserver in (DNS_RESOLVERS or [None]):
+        resolver = _build_resolver()
+        if nameserver:
+            resolver.nameservers = [nameserver]
+        try:
+            texts += [b"".join(r.strings).decode("utf-8", errors="replace") for r in resolver.resolve(name, "TXT")]
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.exception.Timeout):
+            continue
+    return texts
 
 
 def _txt_records(name):
@@ -54,6 +66,8 @@ def _check_spf(domain):
     spf = next(
         (t for t in _txt_records(domain) if t.lower().startswith("v=spf1")), None
     )
+    if spf is None:  # recoupement : un résolveur qui tronque la réponse ne doit pas fabriquer un « absent »
+        spf = next((t for t in _txt_records_per_resolver(domain) if t.lower().startswith("v=spf1")), None)
     if spf is None:
         return {"status": "absent", "record": None, "termination": None,
                 "details": ["-10 pts: SPF absent"]}
