@@ -194,6 +194,23 @@ def _canonical_layer(name):
     return name
 
 
+def _self_hosted_signal(host, server_value, headers_lower):
+    """Signal OBSERVÉ d'une infrastructure propriétaire, ou None. Purement informatif (aucun bonus).
+
+    Deux signaux seulement, lus dans la réponse, sans liste de sites : l'en-tête Server vaut le domaine
+    scanné (Server: github.com), ou un en-tête X-<nom du domaine>-* est posé (X-GitHub-Request-Id)."""
+    zone = registrable_domain(host)
+    label = zone.split(".")[0]
+    server = str(server_value or "").strip()
+    if server and server.lower().split("/")[0].strip() in {str(host).lower(), zone, f"www.{zone}"}:
+        return f"Server: {server}"
+    if len(label) >= 3:
+        marker = next((name for name in headers_lower if name.startswith(f"x-{label}-")), None)
+        if marker:
+            return f"en-tête {marker} observé"
+    return None
+
+
 def _detect_tech(headers_lower, cookie_names):
     """Technologies lues dans Server / X-Powered-By, en-têtes dédiés et cookies : rien n'est deviné."""
     found = []
@@ -501,7 +518,7 @@ def get_http_info(target_url, dns_info, domain):
         "server": "Inconnu", "waf": "Non détecté", "headers": {}, "missing": [],
         "cookies": [], "details": [], "tech": [], "ssl_worked": False, "critical_failure": False,
         # failure : cause d'un arrêt anticipé ("http_clear" | "tls" | "cert") ; http_readable : réponse HTTPS lue
-        "failure": None, "http_readable": False, "waf_layers": [], "challenge": None,
+        "failure": None, "http_readable": False, "waf_layers": [], "challenge": None, "self_hosted_signal": None,
     }
 
     timings = res["timings"] = _Timings()
@@ -563,6 +580,7 @@ def get_http_info(target_url, dns_info, domain):
             res["server"] = resp.headers.get("Server") or "Inconnu"
 
             res["tech"] = _detect_tech(headers_lower, [str(k).lower() for k in resp.cookies.keys()])
+            res["self_hosted_signal"] = _self_hosted_signal(domain, resp.headers.get("Server"), headers_lower)
 
             for h_real, h_name in SECURITY_HEADERS.items():
                 if h_real.lower() in headers_lower:
@@ -816,6 +834,7 @@ def analyze_target(domain):
         "cookies_security": http_d.get("cookies", []),
         "http_readable": http_d["http_readable"],
         "challenge": http_d.get("challenge"),
+        "self_hosted_signal": http_d.get("self_hosted_signal"),
         "dns_zone": dns_zone,
         "tech_stack": list(dict.fromkeys(http_d["tech"])),
         "dns_security": {k: v for k, v in dns_sec.items() if k != "score_details"},

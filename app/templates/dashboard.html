@@ -79,6 +79,9 @@
 {% endif %}
 {# Analyse incomplète : une catégorie n'a pas pu être lue (hors scan interrompu, déjà signalé), ou TLS partiel #}
 {% set unread_cats = cat_rows|rejectattr('evaluated')|map(attribute='label')|list %}
+{# Catégorie non lue (challenge WAF, réponse non lue) : aucun compteur chiffré, l'état en toutes lettres #}
+{% set headers_unread = cat_by_key.get('headers') is mapping and not cat_by_key['headers'].evaluated %}
+{% set cookies_unread = cat_by_key.get('cookies') is mapping and not cat_by_key['cookies'].evaluated %}
 {% set incomplete_parts = (unread_cats + (['TLS partiel'] if tls_unknown else [])) if has_v2 and not crit_failure else [] %}
 {% set infra_bonus = breakdown.get('infra_bonus')|int if has_v2 else 0 %}
 {% set raw_score = breakdown.get('raw_score', score)|int if has_v2 else score %}
@@ -485,6 +488,9 @@
             <div><dt>Émetteur</dt><dd title="{{ ssl.get('issuer', '') }}">{{ ssl.get('issuer', 'Inconnu') }}</dd></div>
             {% if ssl.get('expiry') and ssl.get('expiry') != 'N/A' %}<div><dt>Expiration</dt><dd>{{ ssl.get('expiry') }}</dd></div>{% endif %}
         </dl>
+        {% if not waf_found and scan.get('self_hosted_signal') %}
+        <p class="infra-note">Serveur auto-hébergé — aucune couche de protection tierce identifiée <span>({{ scan.get('self_hosted_signal') }})</span></p>
+        {% endif %}
     </div>
 </section>
 
@@ -580,7 +586,7 @@
         </div>
 
         <div class="glass spot panel rise" style="animation-delay:0.66s">
-            <div class="ph"><h2>Cookies</h2><span class="sc">{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés</span></div>
+            <div class="ph"><h2>Cookies</h2><span class="sc">{% if cookies_unread %}non vérifiable{% else %}{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés{% endif %}</span></div>
             {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
             {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
             {% if not cookie_rows and not cookie_notes %}<p class="empty empty-row">{% if scan.get('http_readable') is sameas false or crit_failure %}Cookies non vérifiables : réponse HTTPS non lue.{% else %}Aucun cookie détecté.{% endif %}</p>{% endif %}
@@ -604,7 +610,7 @@
         </div>
 
         <div class="glass spot panel rise" style="animation-delay:0.78s">
-            <div class="ph"><h2>En-têtes de sécurité</h2><span class="sc">{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs</span></div>
+            <div class="ph"><h2>En-têtes de sécurité</h2><span class="sc">{% if headers_unread %}non vérifiable{% else %}{{ header_rows|selectattr('group', 'equalto', 'active')|list|length }}/{{ header_total }} actifs{% endif %}</span></div>
             {% for r in header_rows|sort(attribute='rank') %}
                 {{ check_line(r.name, r.tone, r.label, '' if r.group == 'active' else r.raw, (r.impact|abs) if r.impact is number and r.impact < 0 else none) }}
             {% else %}
