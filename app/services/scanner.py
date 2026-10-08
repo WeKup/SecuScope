@@ -1,6 +1,7 @@
 from curl_cffi import requests
 import logging
 import os
+import random
 import re
 import time
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ import dns.resolver
 import dns.reversename
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import ipaddress
+import tldextract
 from http.cookies import SimpleCookie
 from urllib.parse import urljoin, urlparse
 from app.services.signature import (
@@ -39,6 +41,17 @@ UA_CHROME = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+
+# Liste des suffixes publics embarquée (aucun accès réseau, aucun cache disque) : bbc.co.uk -> bbc.co.uk,
+# www.economie.gouv.fr -> economie.gouv.fr. Les domaines privés (github.io...) comptent comme suffixes.
+_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True)
+
+
+def registrable_domain(host):
+    """Domaine enregistrable (eTLD+1) de `host` ; `host` lui-même s'il n'en a pas (IP, nom interne)."""
+    host = str(host).lower().rstrip(".")
+    return _TLD_EXTRACT(host).registered_domain or host
+
 
 try:
     from wafw00f.main import WAFW00F  # v2.2.0 : la classe s'écrit WAFW00F
@@ -349,7 +362,7 @@ def _redirect_target_is_public(host):
     return bool(ips) and all(_is_public_ip(ip) for ip in ips)
 
 
-def _follow_redirects(url, timeout):
+def _follow_redirects(url, timeout, headers=None, cookies=None):
     """GET en suivant À LA MAIN les redirections 301/302/303/307/308 (MAX_REDIRECTS sauts).
 
     Renvoie (réponse finale, réponses intermédiaires). Le suivi automatique de curl_cffi coupe la
@@ -357,7 +370,7 @@ def _follow_redirects(url, timeout):
     ici chaque saut repart d'une requête neuve et son hôte doit résoudre vers des IP publiques."""
     hops, current = [], url
     for _ in range(MAX_REDIRECTS + 1):
-        resp = requests.get(current, headers=get_headers(), timeout=timeout,
+        resp = requests.get(current, headers=headers or get_headers(), cookies=cookies, timeout=timeout,
                             allow_redirects=False, impersonate="chrome120")
         location = resp.headers.get("location")
         if resp.status_code not in _REDIRECT_CODES or not location:
@@ -373,6 +386,50 @@ def _follow_redirects(url, timeout):
     return resp, hops  # trop de sauts : la dernière réponse est encore une redirection
 
 
+CHALLENGE_MAX_BODY = 30_000   # une page de challenge est minuscule (≈ 6 Ko chez Imperva) ; un vrai site pèse bien plus
+
+
+def _browser_headers():
+    """En-têtes d'un navigateur complet, pour le retry après un challenge."""
+    return {**get_headers(), "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8", "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1"}
+
+
+def _detect_challenge(status, headers_lower, cookie_names, body):
+    """Nom du WAF si la réponse est une page de challenge/blocage et non le site ; sinon None.
+
+    Faisceau STRICT : plusieurs signaux indépendants doivent concorder (identité du WAF + page
+    caractéristique + page minuscule sans contenu de site), jamais un signal seul. Une page de site
+    réelle qui mentionne un WAF n'est pas un challenge.
+    Couverts : Imperva/Incapsula, Cloudflare, Akamai. TODO : DDoS-Guard, Sucuri, F5 si observés."""
+    low = (body or "").lower()
+    short = len(low) < CHALLENGE_MAX_BODY
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", low, re.S)
+    title = title_match.group(1).strip() if title_match else ""
+    no_site = len(re.findall(r"<a[\s>]", low)) <= 3 and not re.search(r"<(nav|main|footer|article)\b", low)
+    security_headers = any(h.lower() in headers_lower for h in SECURITY_HEADERS)
+
+    # Imperva : identité (x-iinfo ou cookies incap) + page de challenge + minuscule + aucun en-tête de sécurité
+    imperva_id = "x-iinfo" in headers_lower or any(c.startswith(("visid_incap", "incap_ses")) for c in cookie_names)
+    imperva_page = ("pardon our interruption" in title or "_incapsula_resource" in low or "/_incapsula_" in low)
+    if imperva_id and imperva_page and short and no_site and not security_headers:
+        return "Imperva"
+
+    # Cloudflare : identité (cf-ray) + en-tête explicite cf-mitigated, ou titre « Just a moment » + plateforme de challenge
+    cf_id = "cf-ray" in headers_lower or "cloudflare" in str(headers_lower.get("server", ""))
+    cf_header = str(headers_lower.get("cf-mitigated", "")).lower() == "challenge"
+    cf_page = (title.startswith(("just a moment", "attention required")) and status in (403, 429, 503)
+               and ("/cdn-cgi/challenge-platform/" in low or "cf_chl_" in low or "cf-chl" in low))
+    if cf_id and short and (cf_header or cf_page):
+        return "Cloudflare"
+
+    # Akamai : refus 403 « Access Denied » avec les marqueurs propres à la page d'erreur Akamai
+    if (status == 403 and short and title.startswith("access denied")
+            and ("errors.edgesuite.net" in low or re.search(r"reference #\d+\.", low))):
+        return "Akamai"
+    return None
+
+
 def _is_redirect(resp):
     return resp.status_code in _REDIRECT_CODES and bool(resp.headers.get("location"))
 
@@ -385,7 +442,7 @@ def _merge_hops(resp, hops):
     for r in [*hops, resp]:
         headers.update(dict(r.headers))
         for name in r.cookies.keys():
-            cookies[name] = True
+            cookies[name] = r.cookies.get(name)
     return headers, cookies
 
 
@@ -444,7 +501,7 @@ def get_http_info(target_url, dns_info, domain):
         "server": "Inconnu", "waf": "Non détecté", "headers": {}, "missing": [],
         "cookies": [], "details": [], "tech": [], "ssl_worked": False, "critical_failure": False,
         # failure : cause d'un arrêt anticipé ("http_clear" | "tls" | "cert") ; http_readable : réponse HTTPS lue
-        "failure": None, "http_readable": False, "waf_layers": [],
+        "failure": None, "http_readable": False, "waf_layers": [], "challenge": None,
     }
 
     timings = res["timings"] = _Timings()
@@ -472,18 +529,48 @@ def get_http_info(target_url, dns_info, domain):
             res["details"].append("-100 pts: Redirection DANGEREUSE vers HTTP")
             return res
 
-        # --- Technologies et en-têtes de sécurité (lecture locale de la réponse, instantané) ---
-        res["server"] = resp.headers.get("Server") or "Inconnu"
+        # --- Challenge / blocage WAF : la réponse n'est pas le site, on ne la lit pas comme telle ---
+        def challenge_of(response, chain_cookie_names):
+            return _detect_challenge(response.status_code, {k.lower(): v for k, v in response.headers.items()},
+                                     [str(c).lower() for c in chain_cookie_names], response.text)
 
-        res["tech"] = _detect_tech(headers_lower, [str(k).lower() for k in resp.cookies.keys()])
+        challenge = challenge_of(resp, chain_cookies.keys())
+        if challenge:
+            # Un seul retry : courte pause, en-têtes de navigateur complets et cookies de session reçus.
+            time.sleep(random.uniform(0.6, 1.4))
+            try:
+                with timings.phase("retry_challenge"):
+                    retry, retry_hops = _follow_redirects(https_url, HTTP_TIMEOUT, headers=_browser_headers(),
+                                                          cookies={k: v for k, v in chain_cookies.items() if v})
+                if not _is_redirect(retry) and retry.url.startswith("https://"):
+                    r_headers, r_cookies = _merge_hops(retry, retry_hops)
+                    if not challenge_of(retry, r_cookies.keys()):
+                        resp, hops = retry, retry_hops
+                        chain_headers, chain_cookies = r_headers, r_cookies
+                        all_headers, headers_lower = chain_headers, {k.lower(): v for k, v in resp.headers.items()}
+                        challenge = None
+            except (requests.exceptions.RequestException, UnsafeRedirect):
+                pass  # le retry est une chance bonus : en cas d'échec on garde le verdict « challenge »
 
-        for h_real, h_name in SECURITY_HEADERS.items():
-            if h_real.lower() in headers_lower:
-                res["headers"][h_name] = "✅ Présent"
-                res["details"].append(f"+5 pts: {h_name}")
-            else:
-                res["headers"][h_name] = "❌ Manquant"
-                res["missing"].append(h_name)
+        if challenge:
+            # unknown ≠ absent : en-têtes, cookies et stack de la page de challenge ne disent rien du site.
+            res["http_readable"] = False
+            res["challenge"] = challenge
+            res["details"].append(f"Page de challenge {challenge} servie à la place du site : "
+                                  "en-têtes et cookies non vérifiables")
+        else:
+            # --- Technologies et en-têtes de sécurité (lecture locale de la réponse, instantané) ---
+            res["server"] = resp.headers.get("Server") or "Inconnu"
+
+            res["tech"] = _detect_tech(headers_lower, [str(k).lower() for k in resp.cookies.keys()])
+
+            for h_real, h_name in SECURITY_HEADERS.items():
+                if h_real.lower() in headers_lower:
+                    res["headers"][h_name] = "✅ Présent"
+                    res["details"].append(f"+5 pts: {h_name}")
+                else:
+                    res["headers"][h_name] = "❌ Manquant"
+                    res["missing"].append(h_name)
 
         # --- Sondes réseau indépendantes, lancées en parallèle (chacune borne son propre délai) ---
         def probe_http_clear():
@@ -548,7 +635,8 @@ def get_http_info(target_url, dns_info, domain):
             res["details"].append("+5 pts: HSTS")
 
         # Audit des Cookies
-        res["cookies"] = _audit_cookies(resp)
+        if not challenge:
+            res["cookies"] = _audit_cookies(resp)
 
     # --- GESTION DES ERREURS ---
     except (requests.exceptions.SSLError, requests.exceptions.ProxyError):
@@ -660,7 +748,9 @@ def analyze_target(domain):
     ex = ThreadPoolExecutor(max_workers=4)
     f_http = ex.submit(_timed_call, get_http_info, target_url, dns_d, domain)
     f_ssl = ex.submit(_timed_call, get_ssl_info, domain)
-    f_dns_sec = ex.submit(_timed_call, analyze_dns_security, domain)
+    # SPF, DMARC, DKIM, DNSSEC, CAA et AXFR appartiennent au domaine enregistrable, pas à www.
+    dns_zone = registrable_domain(domain)
+    f_dns_sec = ex.submit(_timed_call, analyze_dns_security, dns_zone)
     f_tls_deep = ex.submit(_timed_call, analyze_tls_deep, domain)
     try:
         http_d, http_time = result_of(f_http, "http", {
@@ -725,6 +815,8 @@ def analyze_target(domain):
         "missing_headers": missing,
         "cookies_security": http_d.get("cookies", []),
         "http_readable": http_d["http_readable"],
+        "challenge": http_d.get("challenge"),
+        "dns_zone": dns_zone,
         "tech_stack": list(dict.fromkeys(http_d["tech"])),
         "dns_security": {k: v for k, v in dns_sec.items() if k != "score_details"},
         "tls_deep": {k: v for k, v in tls_deep.items() if k != "details"},

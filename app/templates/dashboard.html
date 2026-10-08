@@ -367,7 +367,7 @@
             </div>
             <div class="vmeta">
                 <h1 id="auditDomain">{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}{% if incomplete_parts %}, analyse incomplète{% endif %}.</h1>
-                <p class="say">{% if incomplete_parts %}La note ne porte que sur ce qui a pu être observé : {{ incomplete_parts|join(', ') }} non lu{{ 's' if incomplete_parts|length > 1 }}, sans déduction.{% else %}{{ headline[1] }}{% endif %}</p>
+                <p class="say">{% if incomplete_parts %}La note ne porte que sur ce qui a pu être observé : {{ incomplete_parts|join(', ') }} non lu{{ 's' if incomplete_parts|length > 1 }}{% if scan.get('challenge') %} : le site a servi une page de challenge {{ scan.get('challenge') }} à la place de sa page{% endif %}, sans déduction.{% else %}{{ headline[1] }}{% endif %}</p>
                 <div class="facts">
                     <span class="chip"><b>{{ audit.domain }}</b></span>
                     {% if waf_found %}<span class="chip infra">● {{ waf }}</span>{% endif %}
@@ -579,6 +579,7 @@
                 {% if dns_rows and dcat and dcat.evaluated %}<span class="sc">{{ dcat.score }}/100 · poids {{ dcat.weight }}%</span>
                 {% elif not dns_rows %}<span class="pill">{{ 'Non exécuté' if crit_failure else 'Non vérifié (audit antérieur)' }}</span>{% endif %}
             </div>
+            {% if scan.get('dns_zone') %}<p class="zone-note">DNS e-mail/zone évalués sur <b>{{ scan.get('dns_zone') }}</b>{% if scan.get('dns_zone') != audit.domain %} <span>(domaine d'organisation de {{ audit.domain }})</span>{% endif %}</p>{% endif %}
             {% if dns_rows %}
                 {% for r in dns_rows|sort(attribute='rank') %}{{ check_line(r.name, r.tone, r.label, r.detail, r.impact) }}{% endfor %}
             {% else %}

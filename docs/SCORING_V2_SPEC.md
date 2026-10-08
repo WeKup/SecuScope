@@ -160,9 +160,18 @@ renormalisés) et le dashboard l'affiche « Non évalué », jamais 100/100.
 | Catégorie | Non évaluée quand |
 |---|---|
 | TLS/SSL | scan interrompu (HTTPS non forcé) |
-| En-têtes HTTP | aucune réponse HTTP analysée, ou en-têtes non vérifiables |
+| En-têtes HTTP | aucune réponse HTTP analysée, en-têtes non vérifiables, ou page de challenge/blocage WAF servie à la place du site |
 | DNS | contrôles DNS non exécutés |
-| Cookies | scan interrompu, ou réponse HTTPS non lue |
+| Cookies | scan interrompu, ou réponse HTTPS non lue (dont page de challenge WAF) |
+
+**DNS e-mail et zone** : SPF, DMARC, DKIM, DNSSEC, CAA et AXFR s'évaluent sur le domaine
+enregistrable (eTLD+1, liste des suffixes publics), pas sur le sous-domaine saisi : ces
+enregistrements sont publiés sur l'apex. Le domaine utilisé est affiché dans le panneau DNS.
+
+**Pages de challenge WAF** : une réponse n'est tenue pour un challenge que si plusieurs signaux
+concordent (identité du WAF, page caractéristique, page minuscule sans contenu de site, aucun en-tête
+de sécurité pour Imperva). Elle n'est alors pas lue comme le site : un seul retry avec en-têtes de
+navigateur complets, puis « non vérifiable » (jamais « manquant »), la détection du WAF restant valide.
 
 **Analyse incomplète** : hors scan interrompu, si une catégorie reste non évaluée (ou si l'analyse
 TLS est partielle), le verdict est marqué « partiel » : badge « Analyse incomplète », légende du
