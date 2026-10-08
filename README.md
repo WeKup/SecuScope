@@ -16,7 +16,10 @@ SecuScope observe ce qu'un domaine expose publiquement (handshake TLS, enregistr
 
 **Démo en ligne : <https://REMPLACER-PAR-L-URL-DE-LA-DEMO>**
 
-Identifiants de démo : *à renseigner après création du compte (`flask create-user`).*
+Identifiants de démo : 
+
+- Username : demo@secuscope.app
+- Password : demo-secuscope-2026
 
 L'accès est protégé par un compte : il n'y a pas d'inscription publique.
 
