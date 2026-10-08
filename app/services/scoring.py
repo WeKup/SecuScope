@@ -257,6 +257,22 @@ def calculate_trust_score(scan_results):
         "cookies": _score_cookies(scan_results),
     }
 
+    # VERDICT PARTIEL : une catégorie n'a pas pu être lue (challenge WAF, réponse HTTP non lue, DNS non
+    # exécuté...) sans que le scan soit interrompu. On décrit, on ne note pas : aucune note globale et
+    # surtout aucune moyenne re-normalisée sur les seules catégories restantes (elle récompenserait le
+    # site qui bloque l'analyse). Les notes par catégorie, elles, restent celles qui ont été mesurées.
+    if not scan_results.get("critical_failure") and any(not c["evaluated"] for c in categories.values()):
+        return {
+            "numeric": None,
+            "letter": None,
+            "categories": categories,
+            "infra_bonus": 0,
+            "raw_score": None,
+            "cap": None,
+            "partial": True,
+            "details": _legacy_details(categories, 0, None),
+        }
+
     # Moyenne pondérée sur les catégories évaluées seulement (poids renormalisés).
     measured = [c for c in categories.values() if c["evaluated"]]
     total_weight = sum(c["weight"] for c in measured)
@@ -283,5 +299,6 @@ def calculate_trust_score(scan_results):
         "infra_bonus": bonus,
         "raw_score": raw_score,
         "cap": cap,
+        "partial": False,
         "details": _legacy_details(categories, bonus, cap),
     }

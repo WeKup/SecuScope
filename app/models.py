@@ -30,5 +30,5 @@ class Audit(db.Model):
     score = db.Column(db.String(2)) # A, B, C...
 
     # Ajouts de sécurité et metric
-    numeric_score = db.Column(db.Integer, default=0)
+    numeric_score = db.Column(db.Integer)  # NULL = scan partiel, non noté (jamais 0)
     session_id = db.Column(db.String(64))

@@ -29,6 +29,9 @@
 {% set tls_unknown = (protocols.values()|select('none')|list|length) if tls_ok else 0 %}
 {% set axfr = dns_sec.get('axfr') if dns_sec.get('axfr') is mapping else {} %}
 {% set crit_failure = scan.get('critical_failure') is sameas true %}
+{# Verdict partiel : aucune note globale, on décrit ce qui a été observé #}
+{% set partial = scan.get('partial') is sameas true %}
+{% set challenge = scan.get('challenge') %}
 {# Cause de l'arrêt du scan : HTTP en clair, handshake TLS échoué ou certificat invalide (anciens audits : HTTP en clair) #}
 {% set failure_kind = scan.get('failure_kind') or 'http_clear' %}
 {% set failure_label = {'http_clear': 'HTTP en clair / HTTPS non forcé', 'tls_handshake': 'Handshake TLS échoué (protocole/cipher obsolète ou incompatible)', 'cert_invalid': 'Certificat TLS invalide'}.get(failure_kind, 'HTTP en clair / HTTPS non forcé') %}
@@ -360,14 +363,22 @@
 <section aria-labelledby="auditDomain">
     <div class="hero">
         <div class="glass spot verdict rise" style="animation-delay:.05s">
+            {% if partial %}
+            <div class="sealwrap" role="img" aria-label="Analyse incomplète : posture globale non évaluable, aucune note">
+                <div class="halo"></div>
+                <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="0" aria-hidden="true"></svg>
+                <div class="mid" aria-hidden="true"><div class="g inc">Analyse<br>incomplète</div><div class="cap">NON NOTÉ</div></div>
+            </div>
+            {% else %}
             <div class="sealwrap" role="img" aria-label="Score {{ score }} sur 100, grade {{ grade }}{% if cap_gap %}, plafonné (score calculé {{ raw_score }}){% endif %}">
                 <div class="halo"></div>
                 <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="{{ score }}" aria-hidden="true"></svg>
                 <div class="mid" aria-hidden="true"><div class="g">{{ grade }}</div><div class="s"><span id="score">{{ score }}</span> / 100</div><div class="cap">VERDICT {{ 'PARTIEL' if incomplete_parts else 'CERTIFIÉ' }}</div></div>
             </div>
+            {% endif %}
             <div class="vmeta">
-                <h1 id="auditDomain">{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}{% if incomplete_parts %}, analyse incomplète{% endif %}.</h1>
-                <p class="say">{% if incomplete_parts %}La note ne porte que sur ce qui a pu être observé : {{ incomplete_parts|join(', ') }} non lu{{ 's' if incomplete_parts|length > 1 }}{% if scan.get('challenge') %} : le site a servi une page de challenge {{ scan.get('challenge') }} à la place de sa page{% endif %}, sans déduction.{% else %}{{ headline[1] }}{% endif %}</p>
+                <h1 id="auditDomain">{% if partial %}Analyse incomplète.{% else %}{{ headline[0] }}{% if cap_gap %}, plafonnée{% endif %}{% if incomplete_parts %}, analyse incomplète{% endif %}.{% endif %}</h1>
+                <p class="say">{% if partial %}Posture globale non évaluable : {% if challenge %}le site bloque l'analyse HTTP (challenge {{ challenge }} détecté){% else %}{{ unread_cats|join(', ') }} non lu{{ 's' if unread_cats|length > 1 }}{% endif %}. Les éléments observables sont présentés ci-dessous.{% elif incomplete_parts %}La note ne porte que sur ce qui a pu être observé : {{ incomplete_parts|join(', ') }} non lu{{ 's' if incomplete_parts|length > 1 }}{% if scan.get('challenge') %} : le site a servi une page de challenge {{ scan.get('challenge') }} à la place de sa page{% endif %}, sans déduction.{% else %}{{ headline[1] }}{% endif %}</p>
                 <div class="facts">
                     <span class="chip"><b>{{ audit.domain }}</b></span>
                     {% if waf_found %}<span class="chip infra">● {{ waf }}</span>{% endif %}
@@ -393,7 +404,7 @@
                     <small>Score calculé avant plafond : {{ raw_score }}/100. Une faille grave ne se compense pas par les autres catégories.</small>
                     {% else %}
                     Faille{{ 's' if critical_findings|length > 1 }} critique{{ 's' if critical_findings|length > 1 }} : {{ critical_findings|map(attribute='label')|join(' ; ') }}.
-                    {% if has_v2 %}<small>{% if ns.wsum %}Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.{% else %}Aucune catégorie n'a pu être mesurée : la note est fixée par ce plafond ({{ score }}/100).{% endif %}</small>{% endif %}
+                    {% if partial %}<small>Observée malgré l'analyse incomplète : à traiter même sans note globale.</small>{% elif has_v2 %}<small>{% if ns.wsum %}Plafond non déclenché : le score calculé est déjà sous le seuil correspondant.{% else %}Aucune catégorie n'a pu être mesurée : la note est fixée par ce plafond ({{ score }}/100).{% endif %}</small>{% endif %}
                     {% endif %}
                 </div>
             </div>
@@ -422,7 +433,7 @@
 {% if has_v2 and cat_rows %}
 <!-- 2. SCORECARDS : note par catégorie, pondérées -->
 <section aria-labelledby="categoriesTitle">
-    <div class="eyebrow" id="categoriesTitle">Notes par catégorie · moyenne pondérée</div>
+    <div class="eyebrow" id="categoriesTitle">Notes par catégorie · {% if partial %}aucune moyenne : verdict partiel{% else %}moyenne pondérée{% endif %}</div>
     <div class="cats">
         {% for c in cat_rows|sort(attribute='weight', reverse=true) %}
         {% set cg = 'x' if not c.evaluated else 'a' if c.score >= 90 else ('b' if c.score >= 80 else ('c' if c.score >= 60 else ('d' if c.score >= 40 else 'f'))) %}
@@ -433,7 +444,7 @@
             <div class="sc">—<small> <span class="sr-only">non évalué</span></small></div>
             <div class="mbar" aria-hidden="true"></div>
             <div class="ded"><span>Non évalué</span><b>—</b></div>
-            <p class="note">{% if crit_failure %}Scan interrompu ({{ failure_short }}) : cette catégorie n'a pas été mesurée.{% elif scan.get('http_readable') is sameas false %}Réponse HTTPS non lue : contrôle non vérifiable, exclu de la moyenne.{% else %}Contrôle non exécuté pour cet audit : exclu de la moyenne.{% endif %}</p>
+            <p class="note">{% if crit_failure %}Scan interrompu ({{ failure_short }}) : cette catégorie n'a pas été mesurée.{% elif challenge and c.key in ['headers', 'cookies'] %}Page de challenge {{ challenge }} servie à la place du site : non vérifiable (ni « manquant », ni 0/100).{% elif scan.get('http_readable') is sameas false %}Réponse HTTPS non lue : contrôle non vérifiable, exclu de la moyenne.{% else %}Contrôle non exécuté pour cet audit : exclu de la moyenne.{% endif %}</p>
             {% else %}
             <div class="sc">{{ c.score }}<small><span aria-hidden="true">/100</span><span class="sr-only"> sur 100</span></small></div>
             <div class="mbar" aria-hidden="true"><i style="width:{{ c.score }}%"></i></div>
@@ -448,7 +459,9 @@
         {% endfor %}
     </div>
     <div class="formula">
-        {% if ns.wsum %}
+        {% if partial %}
+        <span>note globale non calculée : {{ unread_cats|join(', ') }} non lu{{ 's' if unread_cats|length > 1 }}, aucune moyenne renormalisée</span>
+        {% elif ns.wsum %}
         <span>moyenne pondérée <b>{{ '%.1f'|format(ns.weighted / ns.wsum) }}</b>{% if ns.wsum < 100 %} (sur {{ ns.wsum }}% évalués){% endif %}</span>
         <span>bonus infra <b>+{{ infra_bonus }}</b></span>
         <span>score calculé <b>{{ raw_score }}</b></span>
@@ -456,7 +469,7 @@
         <span>aucune catégorie évaluée : la note est celle du plafond</span>
         {% endif %}
         {% if cap_gap %}<span>plafond <b>{{ cap.get('max', score) }} ({{ cap.get('grade', '?') }})</b></span>{% endif %}
-        <span>final <b>{{ score }}/100</b></span>
+        {% if not partial %}<span>final <b>{{ score }}/100</b></span>{% endif %}
     </div>
 </section>
 {% endif %}
@@ -483,7 +496,7 @@
             {% set delta = last_s - first_s %}
             <div class="glass spot trend rise" style="animation-delay:.42s">
                 <div class="ph"><h2>Évolution du score</h2>
-                    <span class="d">{{ score_history|length }} derniers scans · <b style="color:var({{ '--a' if delta > 0 else ('--f' if delta < 0 else '--faint') }})">{{ '%+d'|format(delta) }}</b></span>
+                    <span class="d">{{ score_history|length }} derniers scans notés{% if partial %} · ce scan partiel n'est pas noté{% endif %} · <b style="color:var({{ '--a' if delta > 0 else ('--f' if delta < 0 else '--faint') }})">{{ '%+d'|format(delta) }}</b></span>
                 </div>
                 <svg id="trend" width="100%" height="180" viewBox="0 0 640 180" role="img"
                      aria-label="Score de {{ first_s }} à {{ last_s }} sur {{ score_history|length }} scans de {{ audit.domain }}"

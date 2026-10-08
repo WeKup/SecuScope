@@ -334,3 +334,6 @@ select.input option{background:#0d0f16;}
 /* domaine sur lequel portent les contrôles DNS e-mail/zone */
 .zone-note{padding:9px 18px;font-size:11.5px;color:var(--faint);border-bottom:1px solid rgba(255,255,255,.045);}
 .zone-note b{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-weight:500;}
+
+/* sceau en verdict partiel : aucun grade, aucune note */
+.sealwrap .g.inc{font-size:21px;line-height:1.15;letter-spacing:-.01em;text-shadow:none;color:var(--muted);}

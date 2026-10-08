@@ -180,8 +180,13 @@ def index():
             return redirect(url_for('main.index'))
             
         score_data = calculate_trust_score(scan_res)
-        scan_res['numeric_score'] = score_data['numeric']
-        scan_res['score'] = score_data['letter']
+        if score_data['partial']:
+            # Verdict partiel : on n'enregistre aucune note globale (ni lettre, ni /100) pour ne pas
+            # polluer la courbe ; les clés numeric_score/score sont absentes, le prompt IA garde ses défauts.
+            scan_res['partial'] = True
+        else:
+            scan_res['numeric_score'] = score_data['numeric']
+            scan_res['score'] = score_data['letter']
         # score_details : vue dégradée "-N pts: ..." pour l'ancien dashboard ;
         # score_breakdown : le vrai détail par catégorie (futur front).
         scan_res['score_details'] = score_data['details']
@@ -213,12 +218,13 @@ def _score_history(audit):
     rows = (Audit.query
             .filter(Audit.domain == audit.domain,
                     Audit.session_id == audit.session_id,
-                    Audit.id <= audit.id)
+                    Audit.id <= audit.id,
+                    Audit.numeric_score.isnot(None))  # les scans partiels ne sont pas notés : hors courbe
             .order_by(Audit.id.desc())
             .limit(HISTORY_LIMIT)
             .all())
     return [
-        {'date': r.timestamp.strftime('%d.%m %H:%M') if r.timestamp else '', 'score': int(r.numeric_score or 0)}
+        {'date': r.timestamp.strftime('%d.%m %H:%M') if r.timestamp else '', 'score': int(r.numeric_score)}
         for r in reversed(rows)
     ]
 

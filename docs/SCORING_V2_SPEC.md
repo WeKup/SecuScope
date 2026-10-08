@@ -173,9 +173,14 @@ concordent (identité du WAF, page caractéristique, page minuscule sans contenu
 de sécurité pour Imperva). Elle n'est alors pas lue comme le site : un seul retry avec en-têtes de
 navigateur complets, puis « non vérifiable » (jamais « manquant »), la détection du WAF restant valide.
 
-**Analyse incomplète** : hors scan interrompu, si une catégorie reste non évaluée (ou si l'analyse
-TLS est partielle), le verdict est marqué « partiel » : badge « Analyse incomplète », légende du
-sceau « VERDICT PARTIEL » et sous-titre qui n'affirme rien sur ce qui n'a pas été lu.
+**Verdict partiel : pas de note globale.** Hors scan interrompu, si une catégorie reste non évaluée
+(challenge WAF, réponse HTTP non lue, DNS non exécuté, TLS sans verdict), on décrit sans noter :
+`numeric = null`, `letter = null`, aucune moyenne renormalisée. Les notes de catégories réellement
+mesurées et leurs déductions restent publiées ; les failles observées (AXFR ouvert, cipher cassé...)
+restent signalées. Le scan est enregistré sans note (`numeric_score` NULL, `partial: true`) et
+n'apparaît pas sur la courbe d'évolution. Un scan complet garde exactement le barème ci-dessus.
+(Le badge « Analyse incomplète » existe aussi quand seule l'analyse TLS est partielle : la note est
+alors calculée, car aucune catégorie n'est manquante.)
 
 Si aucune catégorie n'est évaluée (kill-switch HTTP en clair), le verdict est celui du
 plafond seul : **20 / F**.
