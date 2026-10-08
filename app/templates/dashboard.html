@@ -586,7 +586,7 @@
         </div>
 
         <div class="glass spot panel rise" style="animation-delay:0.66s">
-            <div class="ph"><h2>Cookies</h2><span class="sc">{% if cookies_unread %}non vérifiable{% else %}{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés{% endif %}</span></div>
+            <div class="ph"><h2>Cookies</h2><span class="sc">{% if cookies_unread %}non vérifiable{% elif not cookie_rows %}aucun cookie{% else %}{{ cookie_rows|selectattr('secure')|list|length }}/{{ cookie_rows|length }} sécurisés{% endif %}</span></div>
             {% for c in cookie_rows|sort(attribute='rank') %}{{ check_line(c.name, 'pass' if c.secure else 'medium', 'Sécurisé' if c.secure else 'Exposé', c.attrs, none) }}{% endfor %}
             {% for note in cookie_notes %}<p class="empty empty-row">{{ note }}</p>{% endfor %}
             {% if not cookie_rows and not cookie_notes %}<p class="empty empty-row">{% if scan.get('http_readable') is sameas false or crit_failure %}Cookies non vérifiables : réponse HTTPS non lue.{% else %}Aucun cookie détecté.{% endif %}</p>{% endif %}
