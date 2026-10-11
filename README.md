@@ -14,7 +14,7 @@ SecuScope observe ce qu'un domaine expose publiquement (handshake TLS, enregistr
 
 ## Démo
 
-**Démo en ligne : <https://REMPLACER-PAR-L-URL-DE-LA-DEMO>**
+**Démo en ligne : <https://secuscope.maximedarcherif.com>**
 
 Identifiants de démo : 
 
@@ -28,6 +28,8 @@ L'accès est protégé par un compte : il n'y a pas d'inscription publique.
 | ![Verdict](docs/img/dashboard-verdict.png) | ![Connexion](docs/img/login.png) |
 
 ![Notes par catégorie](docs/img/dashboard-scorecards.png)
+
+![Rapport par IA](docs/img/dashboard-rapport.png)
 
 ![Surface de vulnérabilités et points à corriger](docs/img/dashboard-findings.png)
 
