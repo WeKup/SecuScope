@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 AI_CACHE_DAYS = 7            # fenêtre de réutilisation d'un rapport IA à posture identique
 RECENT_SCAN_MINUTES = 10     # même session, même domaine : on affiche le scan récent au lieu d'en relancer un
 
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.8-flash"
 ALLOWED_MODELS = {
+    DEFAULT_MODEL,
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite-preview-06-17",
     "gemini-1.5-flash",
 }
-DEFAULT_MODEL = "gemini-2.5-flash"
 MAX_API_KEY_LENGTH = 256
 MAX_EMAIL_LENGTH = 255
 MAX_PASSWORD_LENGTH = 256
@@ -70,6 +71,7 @@ def inject_ui_context():
     """Modèle IA effectif, origine de la clé et helpers de langue, pour les templates."""
     return {
         'current_model': session.get('user_model_id') or DEFAULT_MODEL,
+        'default_model': DEFAULT_MODEL,
         'own_key': bool(session.get('user_api_key')),
         'lang': get_lang(),
         'lang_names': LANG_NAMES,

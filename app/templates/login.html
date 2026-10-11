@@ -25,7 +25,7 @@
                 <summary>{{ tr('Use my own Gemini key (optional)') }}</summary>
                 <label class="lb" for="model_id">{{ tr('AI model') }}</label>
                 <select id="model_id" name="model_id" class="input">
-                    <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash ({{ tr('recommended') }})</option>
+                    <option value="{{ default_model }}" selected>{{ default_model }} ({{ tr('recommended') }})</option>
                     <option value="gemini-2.5-flash-lite-preview-06-17">Gemini 2.5 Flash Lite ({{ tr('economy') }})</option>
                     <option value="gemini-1.5-flash">Gemini 1.5 Flash (legacy)</option>
                 </select>

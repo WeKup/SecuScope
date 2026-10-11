@@ -132,6 +132,7 @@ L'application écoute sur <http://127.0.0.1:8000>. Pour un test local en HTTP, m
 |---|---|
 | `SECRET_KEY` | **Obligatoire.** Signe les sessions et les jetons CSRF ; l'application refuse de démarrer sans. Générer avec `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Identifiants PostgreSQL ; `docker-compose.yml` en déduit `DATABASE_URL` |
+| `GEMINI_MODEL` | Modèle Gemini par défaut (défaut : `gemini-3.8-flash`), utilisé pour l'appel IA et affiché dans l'en-tête |
 | `GOOGLE_API_KEY` | Clé Gemini côté serveur, utilisée pour tous les scans. Jamais stockée en base. Sans clé, l'audit fonctionne et l'analyse IA est signalée « indisponible » |
 | `DNS_RESOLVERS` | Résolveurs interrogés pour les contrôles DNS (défaut `1.1.1.1,9.9.9.9`). `8.8.8.8` est volontairement évité : il tronque les grosses réponses TXT et fabriquerait de faux « SPF absent ». Vide : résolveur du système |
 | `SESSION_COOKIE_SECURE` | `true` par défaut ; `false` uniquement pour un test local en HTTP |
