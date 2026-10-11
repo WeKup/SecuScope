@@ -24,8 +24,6 @@ DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.8-flash"
 ALLOWED_MODELS = {
     DEFAULT_MODEL,
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite-preview-06-17",
-    "gemini-1.5-flash",
 }
 MAX_API_KEY_LENGTH = 256
 MAX_EMAIL_LENGTH = 255

@@ -28,7 +28,7 @@ FR = {
     "Use my own Gemini key (optional)": "Utiliser ma propre clé Gemini (optionnel)",
     "AI model": "Modèle IA",
     "recommended": "recommandé",
-    "economy": "éco",
+    "keys created before ~end of July 2026, otherwise 404 error": "clés créées avant ~fin juillet 2026, sinon erreur 404",
     "Google Gemini API key": "Clé API Google Gemini",
     "Without a personal key, the server key is used. Yours stays in session memory and is never stored.":
         "Sans clé personnelle, la clé du serveur est utilisée. La vôtre reste en mémoire de session et n'est jamais enregistrée.",
