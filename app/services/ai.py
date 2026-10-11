@@ -9,10 +9,10 @@ from app.services.scoring import deduction_severity, failure_label
 logger = logging.getLogger(__name__)
 
 # À incrémenter quand le prompt change : invalide les rapports mis en cache avec l'ancien prompt.
-PROMPT_VERSION = "2026-10-v3"
+PROMPT_VERSION = "2026-10-v4"
 
 # À incrémenter quand le prompt change : invalide les rapports mis en cache avec l'ancien prompt.
-PROMPT_VERSION = "2026-10-v3"
+PROMPT_VERSION = "2026-10-v4"
 
 DEFAULT_RISKS = {"mitm": 0, "xss": 0, "clickjacking": 0, "sniffing": 0, "waf": 0}
 
@@ -205,12 +205,16 @@ def _format_waf(scan_data):
     return line
 
 
-def _build_prompt(scan_data):
+def _build_prompt(scan_data, language="français"):
     waf_line = _format_waf(scan_data)
     http_lines = _format_http(scan_data)
     dns_summary = _format_dns_security(scan_data.get('dns_security', {}))
     severity = _severity_summary(scan_data)
+    language_en = {"anglais": "English"}.get(language, "French")
     return f"""
+OUTPUT LANGUAGE (mandatory): write every text value of the JSON ("executive" and each "technical" item)
+in {language_en}, whatever the language of the data below. Do not answer in any other language.
+
 Tu es un expert en cybersécurité (Audit Black Box).
 Analyse ce domaine : {scan_data['domain']}
 
@@ -242,6 +246,12 @@ comme classés ci-dessus, jamais ta propre échelle.
 CONSIGNE : tiens compte des failles DNS ci-dessus dans "executive" et "technical".
 Ne déduis rien d'un contrôle « non vérifié » ou « non disponible ».
 
+LANGUE : rédige tout le contenu textuel de "executive" et "technical" en {language}. Les données
+ci-dessus sont en français : en {language}, traduis les termes de sévérité par leur équivalent
+(critique = critical, moyenne = medium, faible = low) et garde les noms techniques (HSTS, CSP, SPF...) tels quels.
+
+RAPPEL : tout le texte du JSON doit être en {language}.
+
 TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/après) avec 3 clés :
 1. "executive": Résumé dirigeant (2 phrases, ton professionnel).
 2. "technical": Liste de 4 points techniques actionnables précis.
@@ -254,7 +264,7 @@ TÂCHE : Génère un JSON BRUT UNIQUEMENT (pas de markdown, pas de texte avant/a
 """
 
 
-def posture_signature(scan_data):
+def posture_signature(scan_data, lang="fr"):
     """Empreinte stable de la posture vue par l'IA : domaine, score, détail par catégorie (notes et
     déductions), cap, couches WAF/CDN et mode d'échec. Deux scans à posture identique ont la même
     signature : le rapport IA du premier peut être réutilisé sans rappeler le modèle."""
@@ -263,6 +273,7 @@ def posture_signature(scan_data):
     cap = breakdown.get("cap") or {}
     payload = {
         "prompt": PROMPT_VERSION,
+        "lang": lang,
         "domain": scan_data.get("domain"),
         "score": scan_data.get("numeric_score"),
         "grade": scan_data.get("score"),
@@ -291,7 +302,7 @@ def is_valid_report(report):
             and isinstance(report.get("technical"), list) and bool(report["technical"]))
 
 
-def posture_signature(scan_data):
+def posture_signature(scan_data, lang="fr"):
     """Empreinte stable de la posture vue par l'IA : domaine, score, détail par catégorie (notes et
     déductions), cap, couches WAF/CDN et mode d'échec. Deux scans à posture identique ont la même
     signature : le rapport IA du premier peut être réutilisé sans rappeler le modèle."""
@@ -300,6 +311,7 @@ def posture_signature(scan_data):
     cap = breakdown.get("cap") or {}
     payload = {
         "prompt": PROMPT_VERSION,
+        "lang": lang,
         "domain": scan_data.get("domain"),
         "score": scan_data.get("numeric_score"),
         "grade": scan_data.get("score"),
@@ -328,12 +340,12 @@ def is_valid_report(report):
             and isinstance(report.get("technical"), list) and bool(report["technical"]))
 
 
-def generate_report(scan_data, api_key, model_id):
+def generate_report(scan_data, api_key, model_id, language="français"):
     if not api_key:
         return _fallback_report("Aucune clé API Gemini (GOOGLE_API_KEY absente et pas de clé de session)")
     try:
         client = genai.Client(api_key=api_key)
-        prompt = _build_prompt(scan_data)
+        prompt = _build_prompt(scan_data, language)
 
         for attempt in range(3):
             try:

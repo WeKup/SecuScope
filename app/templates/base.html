@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="{{ lang }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}SecuScope — audit de sécurité externe{% endblock %}</title>
+    <title>{% block title %}SecuScope — {{ tr("external security audit") }}{% endblock %}</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,13 +17,16 @@
 
     <header class="site-header">
         <div class="wrap hbar">
-            <a href="{{ url_for('main.index') }}" class="wm" aria-label="SecuScope, nouveau scan">Secu<b>Scope</b></a>
+            <a href="{{ url_for('main.index') }}" class="wm" aria-label="{{ tr('SecuScope, new scan') }}">Secu<b>Scope</b></a>
             {% block header_target %}{% endblock %}
             <div class="hright">
+                <nav class="lang" aria-label="{{ tr('Language') }}">
+                    {% for code in ['en', 'fr'] %}<a href="{{ lang_url(code) }}" lang="{{ code }}" hreflang="{{ code }}" title="{{ lang_names[code] }}"{% if code == lang %} aria-current="true"{% endif %}>{{ code|upper }}</a>{% endfor %}
+                </nav>
                 {% if session.get('user_id') %}
-                    <span class="hmodel" title="{{ 'Clé Gemini personnelle' if own_key else 'Clé Gemini du serveur' }}"><span class="sr-only">Modèle IA :</span>{{ current_model }}</span>
-                    {% if request.endpoint != 'main.index' %}<a href="{{ url_for('main.index') }}" class="btn">Nouveau scan</a>{% endif %}
-                    <a href="{{ url_for('main.logout') }}" class="hlink">Déconnexion</a>
+                    <span class="hmodel" title="{{ tr('Personal Gemini key') if own_key else tr('Server Gemini key') }}"><span class="sr-only">{{ tr('AI model:') }}</span>{{ current_model }}</span>
+                    {% if request.endpoint != 'main.index' %}<a href="{{ url_for('main.index') }}" class="btn">{{ tr('New scan') }}</a>{% endif %}
+                    <a href="{{ url_for('main.logout') }}" class="hlink">{{ tr('Log out') }}</a>
                 {% endif %}
             </div>
         </div>
@@ -35,7 +38,7 @@
             <div class="glass flash {{ 'err' if category == 'error' }}" role="{{ 'alert' if category == 'error' else 'status' }}">
                 <span class="i" aria-hidden="true">{{ '!' if category == 'error' else 'i' }}</span>
                 <p>{{ message }}</p>
-                <button type="button" onclick="this.parentElement.remove()" aria-label="Fermer le message">&times;</button>
+                <button type="button" onclick="this.parentElement.remove()" aria-label="{{ tr('Close message') }}">&times;</button>
             </div>
           {% endfor %}
         {% endwith %}
@@ -44,7 +47,7 @@
     </main>
 
     <footer class="site-footer">
-        <div class="wrap">SecuScope · audit externe non intrusif, fingerprinting actif léger · respect de la vie privée</div>
+        <div class="wrap">SecuScope · {{ tr('non-intrusive external audit, light active fingerprinting · privacy-respecting') }}</div>
     </footer>
 
     <script src="{{ url_for('static', filename='js/secuscope.js') }}"></script>

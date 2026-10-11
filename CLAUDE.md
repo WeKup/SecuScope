@@ -43,6 +43,8 @@ rapport LLM via `google-genai`. Repo CV, visé top 20 tech — chaque ligne doit
 - `app/services/scoring.py` — `calculate_trust_score`.
 - `app/services/ai.py` — client google-genai, extraction JSON robuste, résumé DNS.
 - `app/services/signature.py` — WAF/INFRA/TECH/SECURITY signatures.
+- `app/i18n.py` + `app/translations.py` — i18n maison (EN par défaut, FR via cookie `lang`, `?lang=xx`) ;
+  textes source en anglais dans les templates (`tr('...')`), libellés stockés FR traduits à l'affichage (`|stored`).
 - `app/models.py` — modèles `User` et `Audit`.
 - `app/cli.py` — `flask create-user` (seule voie de création de compte).
 - `app/static/` — `css/secuscope.css`, `js/secuscope.js` (design system).

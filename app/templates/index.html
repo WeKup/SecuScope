@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}Nouveau scan — SecuScope{% endblock %}
+{% block title %}{{ tr('New scan') }} — SecuScope{% endblock %}
 
 {% block content %}
 <div class="landing">
     <div id="formCard" class="glass spot lhero rise g-x" style="animation-delay:.05s">
         <div>
-            <h1>Auditez la posture de sécurité d'un domaine.</h1>
-            <p class="say">TLS, en-têtes HTTP, DNS, cookies et protections WAF/CDN, notés sur 100. Audit externe non intrusif : aucune exploitation, seulement ce que le domaine expose publiquement.</p>
+            <h1>{{ tr('Audit the security posture of a domain.') }}</h1>
+            <p class="say">{{ tr('TLS, HTTP headers, DNS, cookies and WAF/CDN protections, scored out of 100. Non-intrusive external audit: no exploitation, only what the domain publicly exposes.') }}</p>
 
             {% if error %}
             <div class="errbox" role="alert"><span class="i" aria-hidden="true">!</span><span>{{ error }}</span></div>
@@ -17,42 +17,42 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                 {% if force %}<input type="hidden" name="force" value="1" />{% endif %}
                 <div class="field">
-                    <label for="domain" class="sr-only">Domaine à auditer</label>
+                    <label for="domain" class="sr-only">{{ tr('Domain to audit') }}</label>
                     <input type="text" id="domain" name="domain" class="input" placeholder="example.com" required autocomplete="off" autocapitalize="off" spellcheck="false" value="{{ prefill_domain or '' }}">
-                    <button type="submit" id="scanBtn" class="btn">Auditer le domaine</button>
+                    <button type="submit" id="scanBtn" class="btn">{{ tr('Audit domain') }}</button>
                 </div>
                 <label class="consent" for="legal_consent">
                     <input type="checkbox" name="legal_consent" id="legal_consent" required>
-                    <span>Je certifie être propriétaire de ce domaine ou disposer d'une autorisation écrite pour effectuer cet audit de sécurité externe.</span>
+                    <span>{{ tr('I certify that I own this domain or have written authorization to run this external security audit.') }}</span>
                 </label>
             </form>
 
             <div class="lfacts">
                 <span class="chip">TLS <b>35%</b></span>
-                <span class="chip">en-têtes <b>25%</b></span>
+                <span class="chip">{{ tr('headers') }} <b>25%</b></span>
                 <span class="chip">DNS <b>25%</b></span>
                 <span class="chip">cookies <b>15%</b></span>
             </div>
         </div>
 
         <div class="lseal">
-            <div class="sealwrap" role="img" aria-label="Sceau en attente de verdict">
+            <div class="sealwrap" role="img" aria-label="{{ tr('Seal awaiting verdict') }}">
                 <div class="halo"></div>
                 <svg id="seal" width="196" height="196" viewBox="0 0 196 196" data-score="0" aria-hidden="true"></svg>
-                <div class="mid" aria-hidden="true"><div class="g">?</div><div class="s">— / 100</div><div class="cap">EN ATTENTE</div></div>
+                <div class="mid" aria-hidden="true"><div class="g">?</div><div class="s">— / 100</div><div class="cap">{{ tr('PENDING') }}</div></div>
             </div>
         </div>
     </div>
 
     <div id="loadingMessage" class="glass loader" hidden role="status" aria-live="polite">
-        <div class="lt"><span class="dot" aria-hidden="true"></span><span id="loadTarget">Audit en cours</span><em id="elapsed" style="margin-left:auto;font-style:normal;color:var(--faint)">0,0 s</em></div>
+        <div class="lt"><span class="dot" aria-hidden="true"></span><span id="loadTarget">{{ tr('Audit in progress') }}</span><em id="elapsed" style="margin-left:auto;font-style:normal;color:var(--faint)">{{ tr('0.0 s') }}</em></div>
         <div id="steps">
-            <div class="step" data-step><span><i>○</i>Résolution DNS et filtrage SSRF</span></div>
-            <div class="step" data-step><span><i>○</i>Diagnostic SSL/TLS et expirations</span></div>
-            <div class="step" data-step><span><i>○</i>Audit des en-têtes HTTP</span></div>
-            <div class="step" data-step><span><i>○</i>Analyse de sécurité des cookies</span></div>
-            <div class="step" data-step><span><i>○</i>Détection signatures WAF &amp; CDN</span></div>
-            <div class="step" data-step><span><i>○</i>Génération du rapport IA</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('DNS resolution and SSRF filtering') }}</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('SSL/TLS diagnostics and expiry') }}</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('HTTP headers audit') }}</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('Cookie security analysis') }}</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('WAF & CDN signature detection') }}</span></div>
+            <div class="step" data-step><span><i>○</i>{{ tr('AI report generation') }}</span></div>
         </div>
         <div class="loglines" id="liveLogs"></div>
     </div>
@@ -60,15 +60,16 @@
 
 <script>
     // Animation d'attente : séquence indicative, la redirection serveur reste maître du rythme réel.
+    const I18N = {{ {'target': tr('Audit of %(domain)s'), 'fallback': tr('the target'), 'decimal': tr('.')}|tojson }};
     document.getElementById('scanForm').addEventListener('submit', () => {
         const form = document.getElementById('formCard'), loader = document.getElementById('loadingMessage');
-        document.getElementById('loadTarget').textContent = 'Audit de ' + (document.getElementById('domain').value.trim() || 'la cible');
+        document.getElementById('loadTarget').textContent = I18N.target.replace('%(domain)s', document.getElementById('domain').value.trim() || I18N.fallback);
         form.hidden = true; loader.hidden = false;
 
         const steps = [...document.querySelectorAll('[data-step]')];
         const timings = [700, 900, 1100, 800, 1300]; // rythme indicatif de l'affichage, pas des mesures
         const t0 = performance.now(), clock = document.getElementById('elapsed');
-        setInterval(() => { clock.textContent = ((performance.now() - t0) / 1000).toFixed(1).replace('.', ',') + ' s'; }, 100);
+        setInterval(() => { clock.textContent = ((performance.now() - t0) / 1000).toFixed(1).replace('.', I18N.decimal) + ' s'; }, 100);
         const logs = document.getElementById('liveLogs');
         const log = t => { const d = document.createElement('div'); d.textContent = '> ' + t; logs.appendChild(d); while (logs.children.length > 3) logs.firstChild.remove(); };
         const mark = (s, cls, glyph) => { s.className = 'step ' + cls; s.querySelector('i').textContent = glyph; };

@@ -1,13 +1,15 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session, abort
+from flask import Blueprint, current_app, render_template, request, redirect, url_for, flash, session, abort
 from werkzeug.security import check_password_hash, generate_password_hash
 import validators
 from app.services.scanner import analyze_target
 from app.services.ai import generate_report, is_valid_report, posture_signature
 from app.services.scoring import calculate_trust_score  
 from app.models import db, Audit, User
+from app.i18n import (SUPPORTED, LANG_COOKIE, LANG_COOKIE_MAX_AGE, LANG_NAMES, PROMPT_LANGUAGE,
+                      get_lang, tr, trn, stored, lang_url, clean_url)
 import uuid
 from urllib.parse import urlparse
 
@@ -37,6 +39,21 @@ PUBLIC_ENDPOINTS = {'main.login', 'main.health'}
 
 
 @bp.before_request
+def switch_language():
+    """?lang=en|fr : pose le cookie de langue puis redirige vers l'URL sans le paramètre.
+
+    Le cookie (et non la session) survit à session.clear() de la connexion/déconnexion.
+    La cible est request.path : redirection toujours locale."""
+    lang = request.args.get('lang')
+    if request.method != 'GET' or lang not in SUPPORTED:
+        return None
+    response = redirect(clean_url())
+    response.set_cookie(LANG_COOKIE, lang, max_age=LANG_COOKIE_MAX_AGE, httponly=True, samesite='Lax',
+                        secure=current_app.config['SESSION_COOKIE_SECURE'])
+    return response
+
+
+@bp.before_request
 def require_login():
     """Toute l'application est derrière connexion, sauf la page de login et /health."""
     if request.endpoint in PUBLIC_ENDPOINTS:
@@ -50,11 +67,19 @@ def require_login():
 
 @bp.app_context_processor
 def inject_ui_context():
-    """Modèle IA effectif et origine de la clé, pour le header."""
+    """Modèle IA effectif, origine de la clé et helpers de langue, pour les templates."""
     return {
         'current_model': session.get('user_model_id') or DEFAULT_MODEL,
         'own_key': bool(session.get('user_api_key')),
+        'lang': get_lang(),
+        'lang_names': LANG_NAMES,
+        'lang_url': lang_url,
+        'tr': tr,
+        'trn': trn,
     }
+
+
+bp.add_app_template_filter(stored, 'stored')
 
 
 def _server_api_key():
@@ -64,7 +89,8 @@ def _server_api_key():
 def _ai_report_for(scan_res, domain):
     """Rapport IA pour ce scan : réutilisé si un audit récent du même domaine a la même posture, sinon
     généré par le modèle. L'audit (historique) est créé dans tous les cas : seul le TEXTE est mis en cache."""
-    signature = posture_signature(scan_res)
+    lang = get_lang()
+    signature = posture_signature(scan_res, lang)
     cutoff = datetime.utcnow() - timedelta(days=AI_CACHE_DAYS)
     candidates = (Audit.query
                   .filter(Audit.domain == domain, Audit.timestamp >= cutoff,
@@ -80,8 +106,10 @@ def _ai_report_for(scan_res, domain):
         scan_res,
         api_key=session.get('user_api_key') or _server_api_key(),
         model_id=session.get('user_model_id') or DEFAULT_MODEL,
+        language=PROMPT_LANGUAGE[lang],
     )
     if is_valid_report(report):
+        report['lang'] = lang
         report['posture_signature'] = signature  # mémorisée avec le rapport, jamais affichée
     return report
 
@@ -127,9 +155,9 @@ def login():
             user = User.query.filter_by(email=email).first()
         valid = user.check_password(password) if user else (check_password_hash(_DUMMY_HASH, password) and False)
         if not valid:
-            return render_template('login.html', error="Identifiants invalides."), 401
+            return render_template('login.html', error=tr("Invalid credentials.")), 401
         if len(api_key) > MAX_API_KEY_LENGTH:
-            return render_template('login.html', error="Clé API invalide."), 400
+            return render_template('login.html', error=tr("Invalid API key.")), 400
 
         session.clear()  # nouvelle session : pas de fixation, historique cloisonné par connexion
         session.permanent = True
@@ -151,13 +179,13 @@ def index():
         domain = normalize_domain(request.form.get('domain', ''))
         
         if not request.form.get('legal_consent'):
-            return render_template('index.html', error="Vous devez certifier avoir l'autorisation de scanner ce domaine.")
+            return render_template('index.html', error=tr("You must certify that you are authorized to scan this domain."))
             
         if not domain:
             return redirect(url_for('main.index'))
             
         if not validators.domain(domain):
-            return render_template('index.html', error="Domaine invalide")
+            return render_template('index.html', error=tr("Invalid domain"))
         
         if 'session_id' not in session:
             session['session_id'] = str(uuid.uuid4())
@@ -172,11 +200,11 @@ def index():
         
         # Check pour faille SSRF renvoyée par le scanner
         if scan_res.get('error') == "PRIVATE_IP":
-            flash("Action non autorisée : résolution vers une IP privée détectée.", "error")
+            flash(tr("Action not allowed: resolution to a private IP detected."), "error")
             return redirect(url_for('main.index'))
             
         if scan_res.get('error') == "NXDOMAIN":
-            flash(f"Le domaine '{domain}' est introuvable ou n'existe pas.", "error")
+            flash(tr("The domain '%(domain)s' could not be found or does not exist.", domain=domain), "error")
             return redirect(url_for('main.index'))
             
         score_data = calculate_trust_score(scan_res)
@@ -244,5 +272,5 @@ def dashboard(audit_id):
 @bp.route('/logout')
 def logout():
     session.clear()
-    flash("Vous êtes déconnecté.", "info")
+    flash(tr("You have been logged out."), "info")
     return redirect(url_for('main.login'))
