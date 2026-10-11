@@ -27,4 +27,4 @@ USER appuser
 
 # Le conteneur écoute sur 0.0.0.0 (obligatoire pour la redirection de port Docker) ;
 # l'exposition à l'hôte est restreinte à 127.0.0.1 dans docker-compose.yml.
-CMD ["gunicorn", "-w", "3", "-b", "0.0.0.0:8000", "--timeout", "120", "app:create_app()"]
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "--timeout", "120", "app:create_app()"]
