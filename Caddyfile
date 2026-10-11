@@ -1,0 +1,6 @@
+# Exemple de reverse proxy HTTPS (Caddy). Copier vers /etc/caddy/Caddyfile sur le VPS.
+# Caddy obtient et renouvelle seul le certificat Let's Encrypt (ports 80 et 443 ouverts,
+# enregistrement DNS A déjà pointé vers le VPS).
+secuscope.maximedarcherif.com {
+    reverse_proxy 127.0.0.1:8000
+}

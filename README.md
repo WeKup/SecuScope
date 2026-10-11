@@ -150,6 +150,67 @@ docker compose down -v                        # arrêt et purge de la base
 
 `GET /health` répond 200 sans authentification (utilisé par les healthchecks Docker).
 
+## Déploiement (VPS Ubuntu 24.04 + Caddy)
+
+Cible : un VPS (testé sur OVH) sous Ubuntu 24.04, commandes passées en `root`. PostgreSQL reste celui du `docker-compose.yml` (conteneur `db`, volume local) : aucun service externe.
+
+**0. DNS (avant tout).** Créer l'enregistrement `A` `secuscope.maximedarcherif.com` → IP du VPS. Il doit se propager avant que Caddy demande son certificat, sinon Let's Encrypt échoue.
+
+**1. Paquets et pare-feu**
+
+```bash
+apt update && apt install -y docker.io docker-compose-v2 git ufw
+ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw enable
+```
+
+**2. Code et configuration**
+
+```bash
+git clone <url-du-dépôt> secuscope && cd secuscope
+cp .env.example .env
+nano .env   # renseigner SECRET_KEY, POSTGRES_* (mot de passe fort), GOOGLE_API_KEY
+```
+
+Laisser `SESSION_COOKIE_SECURE=true`. Pas de `DATABASE_URL` à écrire : `docker-compose.yml` la construit à partir de `POSTGRES_*` et pointe vers le service `db`.
+
+**3. Démarrage et compte**
+
+```bash
+docker compose up -d --build
+docker compose exec web flask create-user --email demo@exemple.com   # compte démo, mot de passe jetable
+```
+
+**4. HTTPS avec Caddy**
+
+```bash
+apt install -y caddy
+```
+
+Si `apt install caddy` échoue (paquet absent ou trop ancien), ajouter le dépôt officiel :
+
+```bash
+apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+apt update && apt install -y caddy
+```
+
+Puis installer le `Caddyfile` du dépôt et recharger :
+
+```bash
+cp Caddyfile /etc/caddy/Caddyfile
+systemctl reload caddy
+```
+
+Caddy obtient et renouvelle le certificat Let's Encrypt tout seul : le site répond en HTTPS sur `https://secuscope.maximedarcherif.com`.
+
+**Points d'attention**
+
+- Le port 8000 n'est lié qu'à `127.0.0.1` (compose) et seul Caddy y accède ; PostgreSQL (5432) n'est jamais publié. Ne pas modifier ces deux points.
+- Réseau sortant : vérifier que le TCP sortant sur le port 53 n'est pas bloqué par l'hébergeur. Sinon le test AXFR ressort « non vérifié », sans casser l'application.
+- Ne jamais committer `.env` (ignoré par Git) ni aucun secret.
+- Mise à jour : `git pull && docker compose up -d --build`.
+
 ---
 
 ## Structure du dépôt
