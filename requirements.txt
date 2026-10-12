@@ -12,5 +12,6 @@ validators==0.22.0
 fake-useragent==1.5.1
 curl_cffi>=0.5.10
 sslyze==6.3.1
+cryptography==46.0.7
 wafw00f==2.2.0
 tldextract==5.1.2

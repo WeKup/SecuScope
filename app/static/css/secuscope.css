@@ -328,6 +328,9 @@ select.input option{background:#0d0f16;}
 .own-key{margin-top:18px;border-top:1px solid rgba(255,255,255,.07);padding-top:14px;}
 .own-key summary{cursor:pointer;font-size:12.5px;color:var(--muted);list-style:none;}
 .own-key summary::-webkit-details-marker{display:none;}
+.more{margin-top:6px;}
+.more summary{cursor:pointer;color:var(--faint);font-size:12px;}
+.more[open] summary{margin-bottom:4px;}
 .own-key summary::before{content:"+";display:inline-block;width:14px;color:var(--faint);}
 .own-key[open] summary::before{content:"−";}
 .own-key summary:hover{color:var(--tx);}

@@ -325,6 +325,7 @@ def get_dns_info(domain):
 # SSL
 # -------------------------------------------------------------------
 
+AIA_TIMEOUT = 4          # s : téléchargement d'un intermédiaire, court pour ne pas ralentir le scan
 AIA_MAX_BYTES = 65_536   # un certificat intermédiaire pèse ~2 Ko : au-delà, ce n'est pas un certificat
 AIA_MAX_DEPTH = 3        # intermédiaires récupérés au plus (leaf -> I1 -> I2 -> racine du magasin)
 
@@ -338,7 +339,7 @@ def _download_issuer(url):
     if parsed.scheme not in ("http", "https") or not parsed.hostname or not _redirect_target_is_public(parsed.hostname):
         return None
     try:
-        resp = requests.get(url, timeout=LIGHT_WAF_TIMEOUT, allow_redirects=False, impersonate="chrome120")
+        resp = requests.get(url, timeout=AIA_TIMEOUT, allow_redirects=False, impersonate="chrome120")
     except requests.exceptions.RequestException:
         return None
     body = resp.content or b""

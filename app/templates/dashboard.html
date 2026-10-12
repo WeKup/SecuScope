@@ -175,7 +175,7 @@
 {% if crit_failure %}
     {% set _ = tls_raw.append((failure_row, 'critical', tr('Failed'), failure_label, none)) %}
 {% elif ssl.get('valid') and ssl.get('chain_incomplete') %}
-    {% set _ = tls_raw.append((tr('Certificate chain'), 'medium', tr('Incomplete'), tr('TLS chain incomplete: the server does not send the intermediate certificate. Browsers (Chrome, Firefox, Safari, Edge) compensate automatically via AIA, but strict clients do not. Affected: code HTTP clients (Python requests/urllib, Go net/http, Java HttpsURLConnection, Node without an up-to-date CA bundle, curl/wget depending on config); server-to-server integrations and webhooks (Stripe, GitHub...) that validate strictly; mobile apps and SDKs with a limited trust store or pinning; connected and embedded devices (frozen trust store); mail clients (SMTP/IMAP STARTTLS); old Android (< 7). Fix: serve the fullchain (certificate + intermediate) on the server.'), tls_ded.get('Chaîne TLS incomplète (certificat intermédiaire non servi)'))) %}
+    {% set _ = tls_raw.append((tr('Certificate chain'), 'medium', tr('Incomplete'), (tr('TLS chain incomplete: the server does not send the intermediate certificate. Browsers (Chrome, Firefox, Safari, Edge) compensate automatically via AIA, but strict clients do not.'), tr('Affected: code HTTP clients (Python requests/urllib, Go net/http, Java HttpsURLConnection, Node without an up-to-date CA bundle, curl/wget depending on config); server-to-server integrations and webhooks (Stripe, GitHub...) that validate strictly; mobile apps and SDKs with a limited trust store or pinning; connected and embedded devices (frozen trust store); mail clients (SMTP/IMAP STARTTLS); old Android (< 7). Fix: serve the fullchain (certificate + intermediate) on the server.')), tls_ded.get('Chaîne TLS incomplète (certificat intermédiaire non servi)'))) %}
 {% elif ssl.get('valid') %}
     {% set _ = tls_raw.append((tr('Certificate'), 'pass', tr('Valid'), (ssl.get('issuer') or '')|stored, none)) %}
 {% elif cert_invalid %}
@@ -323,7 +323,7 @@
 
 {% macro check_line(name, tone, label, detail, impact) -%}
 <div class="row">
-    <div class="k">{{ name }}{% if detail %}<small>{{ detail }}</small>{% endif %}</div>
+    <div class="k">{{ name }}{% if detail %}{% if detail is string %}<small>{{ detail }}</small>{% else %}<small>{{ detail[0] }}</small><details class="more"><summary>{{ tr('Impact and fix') }}</summary><small>{{ detail[1] }}</small></details>{% endif %}{% endif %}</div>
     <span class="pill {{ pill_of.get(tone, '') }}">{{ label }}</span>
     {% if impact is number and impact > 0 %}<span class="imp {{ text_of.get(tone, '') }}">−{{ impact }}</span>{% else %}<span class="imp" aria-hidden="true">—</span><span class="sr-only">{{ tr('no impact on the score') }}</span>{% endif %}
 </div>
@@ -596,7 +596,7 @@
         {% for f in finds[:8] %}
         <div class="find g-{{ {'critical': 'f', 'high': 'd', 'medium': 'c'}.get(f.tone, 'x') }}">
             <span class="sev" aria-hidden="true"></span>
-            <div class="t">{{ f.title }}{% if f.detail %}<span>{{ f.detail }}</span>{% endif %}</div>
+            <div class="t">{{ f.title }}{% if f.detail is string and f.detail %}<span>{{ f.detail }}</span>{% elif f.detail %}<span>{{ f.detail[0] }}</span><details class="more"><summary>{{ tr('Impact and fix') }}</summary><span>{{ f.detail[1] }}</span></details>{% endif %}</div>
             <span class="tag">{{ f.tag }}</span>
         </div>
         {% else %}
