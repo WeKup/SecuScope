@@ -1,7 +1,10 @@
 from google import genai
+from google.genai import errors as genai_errors
 import hashlib
+import httpx
 import logging
 import json
+import random
 import time
 
 from app.services.scoring import deduction_severity, failure_label
@@ -344,6 +347,21 @@ def is_valid_report(report):
             and isinstance(report.get("technical"), list) and bool(report["technical"]))
 
 
+MAX_ATTEMPTS = 3
+BACKOFF_BASE = 2.0       # s : attente avant le 2e essai, doublée ensuite, + jitter
+TRANSIENT_CODES = {503, 504}   # UNAVAILABLE (surcharge) et DEADLINE_EXCEEDED : l'appel n'a pas été traité
+
+
+def _is_transient(exc):
+    """Surcharge ou timeout : l'appel n'a pas abouti et n'a consommé aucun quota, on peut réessayer.
+
+    429 (quota épuisé), 400 (requête/clé invalide) et 404 (modèle inconnu) échouent immédiatement :
+    réessayer ne changerait rien et un 429 consommerait encore du quota."""
+    if isinstance(exc, genai_errors.APIError):
+        return exc.code in TRANSIENT_CODES
+    return isinstance(exc, httpx.TimeoutException)
+
+
 def generate_report(scan_data, api_key, model_id, language="français"):
     if not api_key:
         return _fallback_report("Aucune clé API Gemini (GOOGLE_API_KEY absente et pas de clé de session)")
@@ -351,15 +369,17 @@ def generate_report(scan_data, api_key, model_id, language="français"):
         client = genai.Client(api_key=api_key)
         prompt = _build_prompt(scan_data, language)
 
-        for attempt in range(3):
+        for attempt in range(MAX_ATTEMPTS):
             try:
                 response = client.models.generate_content(model=model_id, contents=prompt)
                 break
             except Exception as e:
-                if "503" in str(e) and attempt < 2:
-                    time.sleep(3)
-                    continue
-                raise e
+                if not _is_transient(e) or attempt == MAX_ATTEMPTS - 1:
+                    raise
+                delay = BACKOFF_BASE * 2 ** attempt + random.uniform(0, 1)
+                logger.warning("GenAI (%s) indisponible (%s), nouvel essai %s/%s dans %.1fs",
+                               model_id, e, attempt + 2, MAX_ATTEMPTS, delay)
+                time.sleep(delay)
         return _normalize_report(_extract_json_object(response.text))
     except Exception as e:
         return _fallback_report(f"erreur GenAI ({model_id}) : {e}")
