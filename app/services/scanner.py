@@ -820,6 +820,37 @@ def get_http_info(target_url, dns_info, domain):
 
     return res
 
+def get_clear_http_info(domain):
+    """Lecture HTTP EN CLAIR (sans TLS) : en-têtes, cookies et technos, à titre indicatif.
+
+    Utilisée seulement quand l'utilisateur demande d'analyser le reste d'un site sans TLS exploitable.
+    Rien n'est lu si la réponse n'est pas une vraie page servie en clair (erreur, redirection vers HTTPS...)."""
+    res = {"server": "Inconnu", "headers": {}, "missing": [], "cookies": [], "tech": [], "details": [],
+           "http_readable": False}
+    try:
+        resp, _hops = _follow_redirects(f"http://{domain}", HTTP_TIMEOUT)
+    except (requests.exceptions.RequestException, UnsafeRedirect):
+        res["details"].append("Lecture HTTP en clair impossible : en-têtes et cookies non vérifiables")
+        return res
+    if _is_redirect(resp) or resp.status_code >= 400 or not resp.url.startswith("http://"):
+        res["details"].append("Lecture HTTP en clair impossible : en-têtes et cookies non vérifiables")
+        return res
+
+    headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+    res["http_readable"] = True
+    res["server"] = resp.headers.get("Server") or "Inconnu"
+    res["tech"] = _detect_tech(headers_lower, [str(k).lower() for k in resp.cookies.keys()])
+    for h_real, h_name in SECURITY_HEADERS.items():
+        if h_real.lower() in headers_lower:
+            res["headers"][h_name] = "✅ Présent"
+        else:
+            res["headers"][h_name] = "❌ Manquant"
+            res["missing"].append(h_name)
+    res["cookies"] = _audit_cookies(resp)
+    res["details"].append("En-têtes et cookies lus en clair (HTTP) : à titre indicatif")
+    return res
+
+
 # -------------------------------------------------------------------
 # MAIN ORCHESTRATOR
 # -------------------------------------------------------------------
@@ -834,6 +865,9 @@ def _timed_call(fn, *args):
     return result, round(time.perf_counter() - started, 2)
 
 
+FAILURE_KINDS = ("no_tls", "tls_handshake", "http_clear")  # causes d'arrêt relançables sans TLS
+
+
 def _failure_kind(failure, ssl_d):
     """Cause d'un arrêt du scan : no_tls (aucun HTTPS, site servi en clair) | tls_handshake (handshake impossible).
 
@@ -844,7 +878,55 @@ def _failure_kind(failure, ssl_d):
     return "tls_handshake"
 
 
-def analyze_target(domain):
+def _analyze_without_tls(domain, dns_d, reason):
+    """Contrôles indépendants du TLS pour un site sans TLS exploitable : DNS/e-mail (SPF, DMARC, DNSSEC, CAA,
+    AXFR) et lecture HTTP en clair. Aucune note : le TLS n'est pas évalué, le scoring rend un verdict partiel."""
+    from app.services.dns_security import analyze_dns_security
+
+    dns_zone = registrable_domain(domain)
+    ex = ThreadPoolExecutor(max_workers=2)
+    f_dns_sec = ex.submit(analyze_dns_security, dns_zone)
+    f_http = ex.submit(get_clear_http_info, domain)
+    try:
+        try:
+            dns_sec = f_dns_sec.result(timeout=SCAN_BUDGET)
+        except Exception:
+            logger.exception("Scan %s : dns_security en échec", domain)
+            dns_sec = {"score_details": []}
+        try:
+            http_d = f_http.result(timeout=SCAN_BUDGET)
+        except Exception:
+            logger.exception("Scan %s : lecture HTTP en clair en échec", domain)
+            http_d = {"server": "Inconnu", "headers": {}, "missing": [], "cookies": [], "tech": [],
+                      "details": ["Lecture HTTP en clair impossible : en-têtes et cookies non vérifiables"],
+                      "http_readable": False}
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+    headers, missing = http_d["headers"], http_d["missing"]
+    if not http_d["http_readable"]:
+        headers = {name: "⚪ Non vérifiable" for name in SECURITY_HEADERS.values()}
+        missing = []
+    return {
+        "domain": domain, "ip": dns_d["ip"],
+        "ssl": {"valid": False, "issuer": "Inconnu", "details": []},
+        "waf_detected": "Non détecté", "waf_layers": [],
+        "server": http_d["server"],
+        "headers": headers, "missing_headers": missing,
+        "cookies_security": http_d["cookies"],
+        "http_readable": http_d["http_readable"],
+        "dns_zone": dns_zone,
+        "tech_stack": list(dict.fromkeys(http_d["tech"])),
+        "dns_security": {k: v for k, v in dns_sec.items() if k != "score_details"},
+        # no_tls : TLS absent ou non vérifiable, analyse indicative. failure_kind garde le motif de l'arrêt initial.
+        "no_tls": True, "failure_kind": reason if reason in FAILURE_KINDS else "tls_handshake",
+        "score_details": dns_d["details"] + http_d["details"] + dns_sec["score_details"],
+    }
+
+
+def analyze_target(domain, no_tls=False, reason=None):
+    """Audit complet. `no_tls=True` (bouton « Analyser le reste quand même ») : seuls les contrôles
+    indépendants du TLS tournent, `reason` est le motif de l'arrêt initial (failure_kind)."""
     scan_started = time.perf_counter()
     deadline = scan_started + SCAN_BUDGET
     domain = domain.lower().strip()
@@ -857,6 +939,9 @@ def analyze_target(domain):
 
     if not _has_only_public_ips(dns_d):
         return {"error": "PRIVATE_IP", "domain": domain}
+
+    if no_tls:
+        return _analyze_without_tls(domain, dns_d, reason)
 
     # Imports tardifs : ces modules réutilisent DNS_TIMEOUT, _is_public_ip... d'ici.
     from app.services.dns_security import analyze_dns_security

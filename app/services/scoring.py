@@ -92,7 +92,7 @@ def _category(key, deductions, evaluated=True):
 
 
 def _score_tls(scan, caps):
-    if scan.get("critical_failure"):  # connexion HTTPS jamais établie : rien n'a été mesuré
+    if scan.get("critical_failure") or scan.get("no_tls"):  # HTTPS jamais établi / TLS non évalué : rien mesuré
         return _category("tls", [], evaluated=False)
     deductions = []
     ssl_info = scan.get("ssl", {})

@@ -73,6 +73,12 @@ FR = {
     "HTTPS not enforced": "HTTPS non forcé",
     "No HTTPS: no TLS handshake possible on port 443": "Aucun HTTPS : pas de handshake TLS possible sur le port 443",
     "no HTTPS": "pas de HTTPS",
+    "Checks that do not depend on TLS (DNS and email: SPF, DMARC, DNSSEC, CAA, AXFR) and a plain-text HTTP read can still run. The result is a partial verdict, not scored.":
+        "Les contrôles indépendants du TLS (DNS et e-mail : SPF, DMARC, DNSSEC, CAA, AXFR) et une lecture HTTP en clair peuvent encore tourner. Le résultat est un verdict partiel, non noté.",
+    "Analyze the rest anyway": "Analyser le reste quand même",
+    "TLS absent or unverifiable: the rest of the analysis is indicative only. Run it again once the certificate is in place.":
+        "TLS absent ou non vérifiable : le reste de l'analyse est donné à titre indicatif. Relancez quand le certificat sera en place.",
+    "Headers and cookies were read over plain HTTP.": "En-têtes et cookies lus en HTTP clair.",
     "Certificate chain": "Chaîne de certificats",
     "Incomplete": "Incomplète",
     "HTTPS enforcement": "HTTPS forcé",
@@ -398,6 +404,8 @@ STORED_EN = {
         "TLS handshake failed (obsolete or incompatible protocol/cipher)",
     "Certificat TLS invalide": "Invalid TLS certificate",
     "Aucun HTTPS : pas de handshake TLS possible sur le port 443": "No HTTPS: no TLS handshake possible on port 443",
+    "Lecture HTTP en clair impossible : en-têtes et cookies non vérifiables": "Plain-text HTTP read impossible: headers and cookies not verifiable",
+    "En-têtes et cookies lus en clair (HTTP) : à titre indicatif": "Headers and cookies read over plain HTTP: indicative only",
     "Chaîne TLS incomplète (certificat intermédiaire non servi)": "Incomplete TLS chain (intermediate certificate not served)",
     "HTTPS non forcé (site accessible en clair)": "HTTPS not enforced (site reachable in plain text)",
     "Chaîne TLS incomplète : certificat intermédiaire non servi par le serveur": "Incomplete TLS chain: intermediate certificate not served by the server",

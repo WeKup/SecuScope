@@ -171,6 +171,10 @@ def _severity_summary(scan_data):
     if unread and not scan_data.get("critical_failure"):
         lines.append(f"- Catégories NON LUES (analyse incomplète) : {', '.join(unread)}. "
                      "Ne conclus rien sur elles et signale que l'analyse est incomplète.")
+    if scan_data.get("no_tls"):
+        lines.append("- TLS ABSENT ou non vérifiable (analyse relancée sans TLS) : verdict partiel, aucune note. "
+                     "En-têtes et cookies lus en HTTP clair, à titre indicatif. Recommande de mettre HTTPS en place "
+                     "puis de relancer l'audit.")
     return "\n".join(lines)
 
 

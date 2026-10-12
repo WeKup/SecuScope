@@ -34,6 +34,9 @@
 {% set challenge = scan.get('challenge') %}
 {# Cause de l'arrêt du scan : HTTP en clair, handshake TLS échoué ou certificat invalide (anciens audits : HTTP en clair) #}
 {% set failure_kind = scan.get('failure_kind') or 'http_clear' %}
+{# Arrêt faute de HTTPS : le bouton « Analyser le reste » est proposé ; no_tls = relance faite, verdict partiel indicatif #}
+{% set can_continue = crit_failure and failure_kind in ['no_tls', 'tls_handshake', 'http_clear'] %}
+{% set no_tls_run = scan.get('no_tls') is sameas true %}
 {% set failure_label = {'no_tls': tr('No HTTPS: no TLS handshake possible on port 443'), 'http_clear': tr('Plain HTTP / HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed (obsolete or incompatible protocol/cipher)'), 'cert_invalid': tr('Invalid TLS certificate')}.get(failure_kind, tr('Plain HTTP / HTTPS not enforced')) %}
 {% set failure_short = {'no_tls': tr('no HTTPS'), 'http_clear': tr('HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed'), 'cert_invalid': tr('invalid certificate')}.get(failure_kind, tr('HTTPS not enforced')) %}
 {% set failure_row = {'no_tls': tr('HTTPS connection'), 'http_clear': tr('HTTPS connection'), 'tls_handshake': tr('TLS handshake'), 'cert_invalid': tr('Certificate')}.get(failure_kind, tr('HTTPS connection')) %}
@@ -244,7 +247,7 @@
     {% if tls_deep.get('status')|string in tls_unavailable %}
         {% set u = tls_unavailable[tls_deep.get('status')|string] %}
         {% set _ = tls_raw.append((tr('Deep analysis'), 'neutral', u[0], u[1], none)) %}
-    {% elif crit_failure %}
+    {% elif crit_failure or no_tls_run %}
         {% set _ = tls_raw.append((tr('Deep analysis'), 'neutral', tr('Not run'), tr('Scan interrupted: %(reason)s', reason=failure_short), none)) %}
     {% else %}
         {% set _ = tls_raw.append((tr('Deep analysis'), 'neutral', tr('Not verified'), tr('Audit predates the deep TLS analysis'), none)) %}
@@ -366,6 +369,22 @@
     <span class="i" aria-hidden="true">i</span>
     <p>{{ tr('This domain was already scanned %(min)s min ago in this session: here is the existing report.', min=recent_notice.minutes) }}
        <a class="linkbtn" style="margin:0 0 0 6px" href="{{ url_for('main.index', domain=audit.domain, force=1) }}">{{ tr('Force a new scan') }}</a></p>
+</div>
+{% endif %}
+
+{% if can_continue %}
+<div class="glass flash" role="status" style="margin-bottom:6px">
+    <span class="i" aria-hidden="true">!</span>
+    <p><b>{{ failure_label }}.</b> {{ tr('Checks that do not depend on TLS (DNS and email: SPF, DMARC, DNSSEC, CAA, AXFR) and a plain-text HTTP read can still run. The result is a partial verdict, not scored.') }}</p>
+    <form method="post" action="{{ url_for('main.continue_scan', audit_id=audit.id) }}" style="margin:0 0 0 auto">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <button type="submit" class="btn">{{ tr('Analyze the rest anyway') }}</button>
+    </form>
+</div>
+{% elif no_tls_run %}
+<div class="glass flash" role="status" style="margin-bottom:6px">
+    <span class="i" aria-hidden="true">!</span>
+    <p>{{ tr('TLS absent or unverifiable: the rest of the analysis is indicative only. Run it again once the certificate is in place.') }} <small>{{ failure_label }}. {{ tr('Headers and cookies were read over plain HTTP.') }}</small></p>
 </div>
 {% endif %}
 

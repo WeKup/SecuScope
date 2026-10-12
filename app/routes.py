@@ -196,47 +196,68 @@ def index():
             if recent is not None:
                 return redirect(url_for('main.dashboard', audit_id=recent.id, recent=1))
 
-        scan_res = analyze_target(domain)
-        
-        # Check pour faille SSRF renvoyée par le scanner
-        if scan_res.get('error') == "PRIVATE_IP":
-            flash(tr("Action not allowed: resolution to a private IP detected."), "error")
-            return redirect(url_for('main.index'))
-            
-        if scan_res.get('error') == "NXDOMAIN":
-            flash(tr("The domain '%(domain)s' could not be found or does not exist.", domain=domain), "error")
-            return redirect(url_for('main.index'))
-            
-        score_data = calculate_trust_score(scan_res)
-        if score_data['partial']:
-            # Verdict partiel : on n'enregistre aucune note globale (ni lettre, ni /100) pour ne pas
-            # polluer la courbe ; les clés numeric_score/score sont absentes, le prompt IA garde ses défauts.
-            scan_res['partial'] = True
-        else:
-            scan_res['numeric_score'] = score_data['numeric']
-            scan_res['score'] = score_data['letter']
-        # score_details : vue dégradée "-N pts: ..." pour l'ancien dashboard ;
-        # score_breakdown : le vrai détail par catégorie (futur front).
-        scan_res['score_details'] = score_data['details']
-        scan_res['score_breakdown'] = {k: score_data[k] for k in ('categories', 'infra_bonus', 'raw_score', 'cap')}
-        ai_res = _ai_report_for(scan_res, domain)
+        return _run_scan(domain)
 
-        audit = Audit(
-            domain=domain,
-            scan_data=scan_res,
-            ai_report=ai_res,
-            score=score_data['letter'],
-            numeric_score=score_data['numeric'],
-            session_id=session.get('session_id', '')
-        )
-        db.session.add(audit)
-        db.session.commit()
-        return redirect(url_for('main.dashboard', audit_id=audit.id))
-        
     # Lien « forcer un nouveau scan » : domaine prérempli, le consentement reste à cocher.
     prefill = normalize_domain(request.args.get('domain', ''))
     return render_template('index.html', prefill_domain=prefill if validators.domain(prefill) else '',
                            force=request.args.get('force') == '1')
+
+
+def _run_scan(domain, **scan_options):
+    """Scan, notation, rapport IA et enregistrement ; redirige vers le dashboard (ou vers l'accueil sur erreur).
+
+    `scan_options` est transmis à analyze_target (ex. no_tls=True pour « Analyser le reste quand même »)."""
+    scan_res = analyze_target(domain, **scan_options)
+
+    # Check pour faille SSRF renvoyée par le scanner
+    if scan_res.get('error') == "PRIVATE_IP":
+        flash(tr("Action not allowed: resolution to a private IP detected."), "error")
+        return redirect(url_for('main.index'))
+
+    if scan_res.get('error') == "NXDOMAIN":
+        flash(tr("The domain '%(domain)s' could not be found or does not exist.", domain=domain), "error")
+        return redirect(url_for('main.index'))
+
+    score_data = calculate_trust_score(scan_res)
+    if score_data['partial']:
+        # Verdict partiel : on n'enregistre aucune note globale (ni lettre, ni /100) pour ne pas
+        # polluer la courbe ; les clés numeric_score/score sont absentes, le prompt IA garde ses défauts.
+        scan_res['partial'] = True
+    else:
+        scan_res['numeric_score'] = score_data['numeric']
+        scan_res['score'] = score_data['letter']
+    # score_details : vue dégradée "-N pts: ..." pour l'ancien dashboard ;
+    # score_breakdown : le vrai détail par catégorie (futur front).
+    scan_res['score_details'] = score_data['details']
+    scan_res['score_breakdown'] = {k: score_data[k] for k in ('categories', 'infra_bonus', 'raw_score', 'cap')}
+    ai_res = _ai_report_for(scan_res, domain)
+
+    audit = Audit(
+        domain=domain,
+        scan_data=scan_res,
+        ai_report=ai_res,
+        score=score_data['letter'],
+        numeric_score=score_data['numeric'],
+        session_id=session.get('session_id', '')
+    )
+    db.session.add(audit)
+    db.session.commit()
+    return redirect(url_for('main.dashboard', audit_id=audit.id))
+
+
+@bp.route('/scan/continue/<int:audit_id>', methods=['POST'])
+def continue_scan(audit_id):
+    """« Analyser le reste quand même » : relance les contrôles indépendants du TLS d'un audit arrêté
+    faute de HTTPS. Verdict partiel, non noté. L'audit d'origine reste dans l'historique."""
+    audit = Audit.query.get_or_404(audit_id)
+    if audit.session_id != session.get('session_id'):
+        abort(403)
+    scan = audit.scan_data or {}
+    kind = scan.get('failure_kind') or 'http_clear'
+    if scan.get('critical_failure') is not True or kind not in ('no_tls', 'tls_handshake', 'http_clear'):
+        abort(400)
+    return _run_scan(audit.domain, no_tls=True, reason=kind)
 
 HISTORY_LIMIT = 15
 
