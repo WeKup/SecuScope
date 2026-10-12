@@ -12,6 +12,9 @@ import dns.reversename
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import ipaddress
 import tldextract
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.x509.oid import AuthorityInformationAccessOID, NameOID
 from http.cookies import SimpleCookie
 from urllib.parse import urljoin, urlparse
 from app.services.signature import (
@@ -35,6 +38,8 @@ TCP_TIMEOUT = 3
 HTTP_TIMEOUT = 8
 LIGHT_WAF_TIMEOUT = 4
 WAFW00F_TIMEOUT = 12   # sonde wafw00f en dernier recours : abandonnée passé ce délai (s), incluse dans le budget du scan
+X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY = 20  # OpenSSL : émetteur du certificat serveur introuvable (intermédiaire non servi)
+X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT = 2           # OpenSSL : émetteur d'un intermédiaire déjà ajouté introuvable (il en manque un autre)
 SCAN_BUDGET = 40       # budget global d'un scan (s) : au-delà, les composants non terminés sont abandonnés
 UA_CHROME = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -320,6 +325,96 @@ def get_dns_info(domain):
 # SSL
 # -------------------------------------------------------------------
 
+AIA_MAX_BYTES = 65_536   # un certificat intermédiaire pèse ~2 Ko : au-delà, ce n'est pas un certificat
+AIA_MAX_DEPTH = 3        # intermédiaires récupérés au plus (leaf -> I1 -> I2 -> racine du magasin)
+
+
+def _download_issuer(url):
+    """Certificat de l'émetteur pointé par l'extension AIA du certificat serveur, ou None.
+
+    L'URL vient du certificat du site audité, donc d'une source non fiable : schéma http(s), hôte
+    résolvant vers des IP publiques uniquement (anti-SSRF), aucune redirection, taille bornée."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or not _redirect_target_is_public(parsed.hostname):
+        return None
+    try:
+        resp = requests.get(url, timeout=LIGHT_WAF_TIMEOUT, allow_redirects=False, impersonate="chrome120")
+    except requests.exceptions.RequestException:
+        return None
+    body = resp.content or b""
+    if resp.status_code != 200 or not body or len(body) > AIA_MAX_BYTES:
+        return None
+    for loader in (x509.load_der_x509_certificate, x509.load_pem_x509_certificate):
+        try:
+            return loader(body)
+        except ValueError:
+            continue
+    return None
+
+
+def _aia_issuer_url(cert):
+    """URL « CA Issuers » (AIA) d'un certificat x509, ou None."""
+    try:
+        aia = cert.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
+    except x509.ExtensionNotFound:
+        return None
+    for access in aia:
+        if access.access_method == AuthorityInformationAccessOID.CA_ISSUERS:
+            return access.access_location.value
+    return None
+
+
+def _diagnose_incomplete_chain(domain):
+    """Le certificat est-il de confiance et le serveur oublie-t-il seulement l'intermédiaire ?
+
+    Un navigateur comble le trou via AIA ; on refait pareil (téléchargement borné de l'émetteur) puis on
+    revalide la chaîne avec le magasin système. Retourne le certificat serveur (x509) si la validation
+    réussit une fois l'intermédiaire ajouté, sinon None (vrai certificat invalide : auto-signé, CA inconnue...)."""
+    try:
+        raw = ssl.create_default_context()
+        raw.check_hostname, raw.verify_mode = False, ssl.CERT_NONE
+        with socket.create_connection((domain, 443), timeout=HTTP_TIMEOUT) as sock:
+            with raw.wrap_socket(sock, server_hostname=domain) as ssock:
+                leaf = x509.load_der_x509_certificate(ssock.getpeercert(binary_form=True))
+    except (ssl.SSLError, OSError, ValueError):
+        return None
+
+    ctx = ssl.create_default_context()
+    current = leaf
+    for _ in range(AIA_MAX_DEPTH):
+        url = _aia_issuer_url(current)
+        issuer = _download_issuer(url) if url else None
+        if issuer is None:
+            return None
+        ctx.load_verify_locations(cadata=issuer.public_bytes(serialization.Encoding.DER))
+        try:
+            with socket.create_connection((domain, 443), timeout=HTTP_TIMEOUT) as sock:
+                with ctx.wrap_socket(sock, server_hostname=domain):
+                    return leaf
+        except ssl.SSLCertVerificationError as exc:
+            if exc.verify_code not in (X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY, X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT):
+                return None  # autre défaut (expiré, nom, révoqué...) : pas qu'une chaîne incomplète
+            current = issuer
+        except (ssl.SSLError, OSError):
+            return None
+    return None
+
+
+def _cert_org(cert):
+    """Nom d'organisation (sinon CN) de l'émetteur d'un certificat x509."""
+    for oid in (NameOID.ORGANIZATION_NAME, NameOID.COMMON_NAME):
+        values = cert.issuer.get_attributes_for_oid(oid)
+        if values:
+            return str(values[0].value)
+    return "Inconnu"
+
+
+def _cert_expiry(cert):
+    """Date de fin de validité au format de `ssl.getpeercert()['notAfter']`."""
+    not_after = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+    return not_after.strftime("%b %d %H:%M:%S %Y GMT")
+
+
 def get_ssl_info(domain):
     result = {"valid": False, "issuer": "Inconnu", "expiry": "N/A", "details": [], "error_type": None}
 
@@ -347,9 +442,17 @@ def get_ssl_info(domain):
                 if any(x.lower() in str(name).lower() for x in trusted):
                     result["details"].append("+5 pts: Autorité Reconnue")
 
-    except ssl.SSLCertVerificationError:
-        result["error_type"] = "ssl_mismatch"
-        result["details"].append("-20 pts: Certificat invalide (expiré, non reconnu ou nom non concordant)")
+    except ssl.SSLCertVerificationError as exc:
+        leaf = (_diagnose_incomplete_chain(domain)
+                if exc.verify_code == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY else None)
+        if leaf is not None:
+            # Certificat de confiance, mais l'intermédiaire n'est pas servi : sévérité moyenne, pas critique.
+            result.update({"valid": True, "chain_incomplete": True, "issuer": _cert_org(leaf),
+                           "expiry": _cert_expiry(leaf)})
+            result["details"].append("Chaîne TLS incomplète : certificat intermédiaire non servi par le serveur")
+        else:
+            result["error_type"] = "ssl_mismatch"
+            result["details"].append("-20 pts: Certificat invalide (expiré, non reconnu ou nom non concordant)")
     except ssl.SSLError:
         result["error_type"] = "ssl_invalid"
         result["details"].append("-20 pts: Négociation TLS échouée (protocole ou cipher incompatible)")
@@ -379,7 +482,7 @@ def _redirect_target_is_public(host):
     return bool(ips) and all(_is_public_ip(ip) for ip in ips)
 
 
-def _follow_redirects(url, timeout, headers=None, cookies=None):
+def _follow_redirects(url, timeout, headers=None, cookies=None, verify=True):
     """GET en suivant À LA MAIN les redirections 301/302/303/307/308 (MAX_REDIRECTS sauts).
 
     Renvoie (réponse finale, réponses intermédiaires). Le suivi automatique de curl_cffi coupe la
@@ -388,7 +491,7 @@ def _follow_redirects(url, timeout, headers=None, cookies=None):
     hops, current = [], url
     for _ in range(MAX_REDIRECTS + 1):
         resp = requests.get(current, headers=headers or get_headers(), cookies=cookies, timeout=timeout,
-                            allow_redirects=False, impersonate="chrome120")
+                            allow_redirects=False, impersonate="chrome120", verify=verify)
         location = resp.headers.get("location")
         if resp.status_code not in _REDIRECT_CODES or not location:
             return resp, hops
@@ -517,8 +620,10 @@ def get_http_info(target_url, dns_info, domain):
     res = {
         "server": "Inconnu", "waf": "Non détecté", "headers": {}, "missing": [],
         "cookies": [], "details": [], "tech": [], "ssl_worked": False, "critical_failure": False,
-        # failure : cause d'un arrêt anticipé ("http_clear" | "tls" | "cert") ; http_readable : réponse HTTPS lue
+        # failure : cause d'un arrêt anticipé ("no_tls" | "tls") ; http_readable : réponse HTTPS lue
         "failure": None, "http_readable": False, "waf_layers": [], "challenge": None, "self_hosted_signal": None,
+        # https_enforced : False si le site se sert aussi (ou finit) en clair alors que HTTPS fonctionne : finding, pas arrêt
+        "https_enforced": True, "tls_verified": True,
     }
 
     timings = res["timings"] = _Timings()
@@ -527,7 +632,14 @@ def get_http_info(target_url, dns_info, domain):
         # 1. Test HTTPS Principal
         https_url = f"https://{domain}" if not target_url.startswith("https") else target_url
         with timings.phase("https_probe"):
-            resp, hops = _follow_redirects(https_url, HTTP_TIMEOUT)
+            try:
+                resp, hops = _follow_redirects(https_url, HTTP_TIMEOUT)
+            except requests.exceptions.SSLError:
+                # Certificat non validable (expiré, auto-signé, chaîne incomplète...) : ce n'est PAS l'absence de
+                # TLS. On relit le site sans vérification pour poursuivre l'analyse ; la sévérité du certificat
+                # est tranchée par get_ssl_info. Si cette 2e tentative échoue aussi, aucun handshake n'est possible.
+                res["tls_verified"] = False
+                resp, hops = _follow_redirects(https_url, HTTP_TIMEOUT, verify=False)
         if _is_redirect(resp):  # boucle ou chaîne trop longue : on n'analyse pas une réponse de redirection
             res["details"].append(f"Plus de {MAX_REDIRECTS} redirections : réponse finale non lue")
             return res
@@ -541,10 +653,11 @@ def get_http_info(target_url, dns_info, domain):
             res["ssl_worked"] = True
             res["http_readable"] = True
         else:
-            res["critical_failure"] = True
-            res["failure"] = "http_clear"
-            res["details"].append("-100 pts: Redirection DANGEREUSE vers HTTP")
-            return res
+            # HTTPS répond mais finit en clair : un finding (HTTPS non forcé), pas un arrêt.
+            res["ssl_worked"] = True
+            res["http_readable"] = True
+            res["https_enforced"] = False
+            res["details"].append("HTTPS redirige vers HTTP : le site finit en clair")
 
         # --- Challenge / blocage WAF : la réponse n'est pas le site, on ne la lit pas comme telle ---
         def challenge_of(response, chain_cookie_names):
@@ -632,11 +745,9 @@ def get_http_info(target_url, dns_info, domain):
             f_clear = pool.submit(probe_http_clear)
             f_waf = pool.submit(detect_waf)
             f_hsts = pool.submit(www_has_hsts) if "HSTS" in res["missing"] else None
-            if f_clear.result():
-                res["critical_failure"] = True
-                res["failure"] = "http_clear"
-                res["details"].append("-100 pts: 🚨 HTTPS NON FORCÉ (Site accessible en clair)")
-                return res
+            if f_clear.result() and res["https_enforced"]:
+                res["https_enforced"] = False
+                res["details"].append("HTTPS non forcé : le site répond aussi en clair, sans redirection vers HTTPS")
             waf_layers = f_waf.result()
             www_hsts = f_hsts.result() if f_hsts else False
         finally:
@@ -673,7 +784,7 @@ def get_http_info(target_url, dns_info, domain):
             except (requests.exceptions.RequestException, UnsafeRedirect):
                 served_in_clear = False
             if served_in_clear:
-                res["critical_failure"], res["failure"] = True, "http_clear"
+                res["critical_failure"], res["failure"] = True, "no_tls"
                 res["details"].append("-100 pts: 🚨 Aucun HTTPS : site accessible en clair")
             else:
                 res["details"].append("-50 pts: Site Inaccessible")
@@ -688,8 +799,9 @@ def get_http_info(target_url, dns_info, domain):
                 # Rien n'a été lu : en-têtes et cookies sont non vérifiables, pas protégés.
                 res["details"].append("Réponse HTTPS non lue : en-têtes et cookies non vérifiables")
             except ssl.SSLCertVerificationError:
-                res["critical_failure"], res["failure"] = True, "cert"
-                res["details"].append("-100 pts: Certificat TLS invalide")
+                # Un handshake est possible : TLS existe, seul le certificat est refusé (sévérité via get_ssl_info).
+                res["tls_verified"] = False
+                res["details"].append("Réponse HTTPS non lue : certificat non validé, en-têtes et cookies non vérifiables")
             except ssl.SSLError:
                 res["critical_failure"], res["failure"] = True, "tls"
                 res["details"].append("-100 pts: Handshake TLS échoué")
@@ -723,14 +835,12 @@ def _timed_call(fn, *args):
 
 
 def _failure_kind(failure, ssl_d):
-    """Cause d'un arrêt du scan : http_clear | tls_handshake | cert_invalid.
+    """Cause d'un arrêt du scan : no_tls (aucun HTTPS, site servi en clair) | tls_handshake (handshake impossible).
 
-    Un handshake qui échoue (protocole ou cipher refusé, ex. RC4) n'est ni du HTTP en clair
-    ni un certificat invalide : on s'appuie sur le diagnostic TLS standard pour trancher."""
-    if failure == "http_clear":
-        return "http_clear"
-    if failure == "cert" or ssl_d.get("error_type") == "ssl_mismatch":
-        return "cert_invalid"
+    Seuls ces deux cas arrêtent le scan : un certificat invalide ou un HTTPS non forcé sont des findings
+    (le scan continue). Les anciens audits peuvent porter http_clear ou cert_invalid."""
+    if failure == "no_tls":
+        return "no_tls"
     return "tls_handshake"
 
 
@@ -814,7 +924,8 @@ def analyze_target(domain):
 
     # Le client HTTPS a validé le certificat alors que le diagnostic standard a échoué : on garde
     # l'émetteur réel (« Inconnu » si non lu), on ne le remplace par aucun nom inventé.
-    if not ssl_d["valid"] and http_d["ssl_worked"] and ssl_d.get("error_type") != "ssl_mismatch":
+    if (not ssl_d["valid"] and http_d["ssl_worked"] and http_d.get("tls_verified", True)
+            and ssl_d.get("error_type") != "ssl_mismatch"):
         ssl_d.update({"valid": True, "details": ["+20 pts: SSL opérationnel"]})
 
     headers, missing = http_d["headers"], http_d["missing"]
@@ -833,6 +944,7 @@ def analyze_target(domain):
         "missing_headers": missing,
         "cookies_security": http_d.get("cookies", []),
         "http_readable": http_d["http_readable"],
+        "https_enforced": http_d.get("https_enforced", True),
         "challenge": http_d.get("challenge"),
         "self_hosted_signal": http_d.get("self_hosted_signal"),
         "dns_zone": dns_zone,

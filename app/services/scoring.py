@@ -20,6 +20,11 @@ CAP_LEGACY_SSL = 79
 CAP_BROKEN_CIPHER = 79
 CAP_AXFR = 79
 
+CHAIN_INCOMPLETE_POINTS = 15
+CHAIN_INCOMPLETE_LABEL = "Chaîne TLS incomplète (certificat intermédiaire non servi)"
+HTTPS_NOT_ENFORCED_POINTS = 20
+HTTPS_NOT_ENFORCED_LABEL = "HTTPS non forcé (site accessible en clair)"
+
 # Clés = noms d'affichage de SECURITY_HEADERS (signature.py). Total = 100.
 HEADER_DEDUCTIONS = {
     "CSP": 25,
@@ -38,9 +43,10 @@ COOKIE_WEIGHTS = {"secure": 0.4, "httponly": 0.4, "samesite": 0.2}
 
 # Cause d'un arrêt anticipé du scan (clé `failure_kind` de scan_data). Par défaut (anciens audits) : HTTP en clair.
 FAILURE_LABELS = {
-    "http_clear": "HTTP en clair / HTTPS non forcé",
+    "http_clear": "HTTP en clair / HTTPS non forcé",  # anciens audits
+    "no_tls": "Aucun HTTPS : pas de handshake TLS possible sur le port 443",
     "tls_handshake": "Handshake TLS échoué (protocole/cipher obsolète ou incompatible)",
-    "cert_invalid": "Certificat TLS invalide",
+    "cert_invalid": "Certificat TLS invalide",  # anciens audits : n'arrête plus le scan
 }
 
 
@@ -99,6 +105,14 @@ def _score_tls(scan, caps):
     if not ssl_info.get("valid") and ssl_info.get("error_type") == "ssl_mismatch":
         deductions.append((40, "Certificat invalide, expiré ou ne correspond pas au domaine"))
         caps.append((CAP_BAD_CERT, "certificat TLS invalide"))
+
+    # Chaîne incomplète : certificat de confiance, intermédiaire non servi. Moyen (jamais critique), aucun cap :
+    # les navigateurs comblent le trou via AIA, pas les clients stricts. Comme SSL Labs, on déduit sans bloquer.
+    if ssl_info.get("chain_incomplete"):
+        deductions.append((CHAIN_INCOMPLETE_POINTS, CHAIN_INCOMPLETE_LABEL))
+    # HTTPS non forcé : le site répond aussi (ou finit) en clair alors que HTTPS marche. Finding, pas de cap.
+    if scan.get("https_enforced") is False:
+        deductions.append((HTTPS_NOT_ENFORCED_POINTS, HTTPS_NOT_ENFORCED_LABEL))
 
     deep = scan.get("tls_deep") or {}
     if deep.get("status") != "ok":

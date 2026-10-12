@@ -71,6 +71,16 @@ FR = {
         "Handshake TLS échoué (protocole/cipher obsolète ou incompatible)",
     "Invalid TLS certificate": "Certificat TLS invalide",
     "HTTPS not enforced": "HTTPS non forcé",
+    "No HTTPS: no TLS handshake possible on port 443": "Aucun HTTPS : pas de handshake TLS possible sur le port 443",
+    "no HTTPS": "pas de HTTPS",
+    "Certificate chain": "Chaîne de certificats",
+    "Incomplete": "Incomplète",
+    "HTTPS enforcement": "HTTPS forcé",
+    "Not enforced": "Non forcé",
+    "The site also answers in plain text, without redirecting to HTTPS":
+        "Le site répond aussi en clair, sans redirection vers HTTPS",
+    "TLS chain incomplete: the server does not send the intermediate certificate. Browsers (Chrome, Firefox, Safari, Edge) compensate automatically via AIA, but strict clients do not. Affected: code HTTP clients (Python requests/urllib, Go net/http, Java HttpsURLConnection, Node without an up-to-date CA bundle, curl/wget depending on config); server-to-server integrations and webhooks (Stripe, GitHub...) that validate strictly; mobile apps and SDKs with a limited trust store or pinning; connected and embedded devices (frozen trust store); mail clients (SMTP/IMAP STARTTLS); old Android (< 7). Fix: serve the fullchain (certificate + intermediate) on the server.":
+        "Chaîne TLS incomplète : le serveur ne fournit pas le certificat intermédiaire. Les navigateurs (Chrome, Firefox, Safari, Edge) compensent automatiquement via AIA, mais pas les clients stricts. Impactés : clients HTTP de code (Python requests/urllib, Go net/http, Java HttpsURLConnection, Node sans bundle CA à jour, curl/wget selon la config) ; intégrations serveur-à-serveur et webhooks (Stripe, GitHub…) qui valident strictement ; apps mobiles et SDK à trust store limité ou avec pinning ; objets connectés et embarqués (trust store figé) ; clients mail (SMTP/IMAP STARTTLS) ; vieux Android (< 7). Correctif : servir le fullchain (certificat + intermédiaire) côté serveur.",
     "TLS handshake failed": "handshake TLS échoué",
     "invalid certificate": "certificat invalide",
     "HTTPS connection": "Connexion HTTPS",
@@ -387,6 +397,12 @@ STORED_EN = {
     "Handshake TLS échoué (protocole/cipher obsolète ou incompatible)":
         "TLS handshake failed (obsolete or incompatible protocol/cipher)",
     "Certificat TLS invalide": "Invalid TLS certificate",
+    "Aucun HTTPS : pas de handshake TLS possible sur le port 443": "No HTTPS: no TLS handshake possible on port 443",
+    "Chaîne TLS incomplète (certificat intermédiaire non servi)": "Incomplete TLS chain (intermediate certificate not served)",
+    "HTTPS non forcé (site accessible en clair)": "HTTPS not enforced (site reachable in plain text)",
+    "Chaîne TLS incomplète : certificat intermédiaire non servi par le serveur": "Incomplete TLS chain: intermediate certificate not served by the server",
+    "HTTPS non forcé : le site répond aussi en clair, sans redirection vers HTTPS": "HTTPS not enforced: the site also answers in plain text, without redirecting to HTTPS",
+    "HTTPS redirige vers HTTP : le site finit en clair": "HTTPS redirects to HTTP: the site ends up in plain text",
     # scoring.py : catégories
     "En-têtes HTTP": "HTTP headers",
     # scanner.py

@@ -34,11 +34,11 @@
 {% set challenge = scan.get('challenge') %}
 {# Cause de l'arrêt du scan : HTTP en clair, handshake TLS échoué ou certificat invalide (anciens audits : HTTP en clair) #}
 {% set failure_kind = scan.get('failure_kind') or 'http_clear' %}
-{% set failure_label = {'http_clear': tr('Plain HTTP / HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed (obsolete or incompatible protocol/cipher)'), 'cert_invalid': tr('Invalid TLS certificate')}.get(failure_kind, tr('Plain HTTP / HTTPS not enforced')) %}
-{% set failure_short = {'http_clear': tr('HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed'), 'cert_invalid': tr('invalid certificate')}.get(failure_kind, tr('HTTPS not enforced')) %}
-{% set failure_row = {'http_clear': tr('HTTPS connection'), 'tls_handshake': tr('TLS handshake'), 'cert_invalid': tr('Certificate')}.get(failure_kind, tr('HTTPS connection')) %}
+{% set failure_label = {'no_tls': tr('No HTTPS: no TLS handshake possible on port 443'), 'http_clear': tr('Plain HTTP / HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed (obsolete or incompatible protocol/cipher)'), 'cert_invalid': tr('Invalid TLS certificate')}.get(failure_kind, tr('Plain HTTP / HTTPS not enforced')) %}
+{% set failure_short = {'no_tls': tr('no HTTPS'), 'http_clear': tr('HTTPS not enforced'), 'tls_handshake': tr('TLS handshake failed'), 'cert_invalid': tr('invalid certificate')}.get(failure_kind, tr('HTTPS not enforced')) %}
+{% set failure_row = {'no_tls': tr('HTTPS connection'), 'http_clear': tr('HTTPS connection'), 'tls_handshake': tr('TLS handshake'), 'cert_invalid': tr('Certificate')}.get(failure_kind, tr('HTTPS connection')) %}
 {% set cert_invalid = not ssl.get('valid') and ssl.get('error_type') == 'ssl_mismatch' %}
-{% set failure_key = {'http_clear': 'http', 'tls_handshake': 'handshake', 'cert_invalid': 'cert'}.get(failure_kind, 'http') %}
+{% set failure_key = {'no_tls': 'http', 'http_clear': 'http', 'tls_handshake': 'handshake', 'cert_invalid': 'cert'}.get(failure_kind, 'http') %}
 
 {# --- Barème v2 : score_breakdown (absent des audits antérieurs à la refonte) --- #}
 {% set breakdown = scan.get('score_breakdown') %}
@@ -171,12 +171,17 @@
 {% set tls_raw = [] %}
 {% if crit_failure %}
     {% set _ = tls_raw.append((failure_row, 'critical', tr('Failed'), failure_label, none)) %}
+{% elif ssl.get('valid') and ssl.get('chain_incomplete') %}
+    {% set _ = tls_raw.append((tr('Certificate chain'), 'medium', tr('Incomplete'), tr('TLS chain incomplete: the server does not send the intermediate certificate. Browsers (Chrome, Firefox, Safari, Edge) compensate automatically via AIA, but strict clients do not. Affected: code HTTP clients (Python requests/urllib, Go net/http, Java HttpsURLConnection, Node without an up-to-date CA bundle, curl/wget depending on config); server-to-server integrations and webhooks (Stripe, GitHub...) that validate strictly; mobile apps and SDKs with a limited trust store or pinning; connected and embedded devices (frozen trust store); mail clients (SMTP/IMAP STARTTLS); old Android (< 7). Fix: serve the fullchain (certificate + intermediate) on the server.'), tls_ded.get('Chaîne TLS incomplète (certificat intermédiaire non servi)'))) %}
 {% elif ssl.get('valid') %}
     {% set _ = tls_raw.append((tr('Certificate'), 'pass', tr('Valid'), (ssl.get('issuer') or '')|stored, none)) %}
 {% elif cert_invalid %}
     {% set _ = tls_raw.append((tr('Certificate'), 'critical', tr('Invalid'), tr('Expired, self-signed or name mismatch'), tls_ded.get(cap_labels[0]))) %}
 {% else %}
     {% set _ = tls_raw.append((tr('Certificate'), 'neutral', tr('Not verified'), tr('Certificate verification did not complete'), none)) %}
+{% endif %}
+{% if scan.get('https_enforced') is sameas false %}
+    {% set _ = tls_raw.append((tr('HTTPS enforcement'), 'medium', tr('Not enforced'), tr('The site also answers in plain text, without redirecting to HTTPS'), tls_ded.get('HTTPS non forcé (site accessible en clair)'))) %}
 {% endif %}
 {% if tls_ok %}
     {% set pstate = {true: tr('accepted'), false: tr('refused')} %}
@@ -341,7 +346,7 @@
 
 {# --- À corriger : risques réels, du plus grave au plus léger --- #}
 {% set finds = [] %}
-{% if crit_failure %}{% set _ = finds.append({'tone': 'critical', 'title': failure_label, 'detail': (tr('The site answers in plain text: the scan stopped and the score is capped.') if failure_kind == 'http_clear' else tr('The scan stopped: the score is capped.')), 'tag': tr('tls · cap'), 'key': 0}) %}{% endif %}
+{% if crit_failure %}{% set _ = finds.append({'tone': 'critical', 'title': failure_label, 'detail': (tr('The site answers in plain text: the scan stopped and the score is capped.') if failure_kind in ['http_clear', 'no_tls'] else tr('The scan stopped: the score is capped.')), 'tag': tr('tls · cap'), 'key': 0}) %}{% endif %}
 {% for r in tls_rows if r.tone in ['critical', 'high', 'medium', 'low'] and not (crit_failure and r.label == tr('Failed')) %}
     {% set _ = finds.append({'tone': r.tone, 'title': tr('%(name)s: %(label)s', name=r.name, label=r.label|lower), 'detail': r.detail, 'tag': 'tls' ~ (' · −' ~ r.impact if r.impact else ''), 'key': tone_rank[r.tone] * 1000 - (r.impact or 0)}) %}
 {% endfor %}
