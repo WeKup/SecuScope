@@ -2,9 +2,12 @@
 
 {% block title %}{{ audit.domain }} · {{ audit.score or '?' }} — SecuScope{% endblock %}
 
+{% block report_title %}{{ audit.domain }}{% if audit.timestamp %} · {{ audit.timestamp.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}{% endblock %}
+
 {% block header_target %}
 {% set hg = (audit.score or 'x')|lower %}
 <div class="hsearch g-{{ hg if hg in ['a', 'b', 'c', 'd', 'f'] else 'x' }}"><span class="dot"></span>{{ tr('target') }} <b>{{ audit.domain }}</b></div>
+<button type="button" class="btn" data-print-report data-filename="secuscope-{{ audit.domain }}{% if audit.timestamp %}-{{ audit.timestamp.strftime('%Y%m%d') }}{% endif %}"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg>{{ tr('Export PDF report') }}</button>
 {% endblock %}
 
 {% block content %}

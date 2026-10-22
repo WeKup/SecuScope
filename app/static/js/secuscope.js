@@ -102,6 +102,25 @@
     }
   }
 
+  // export PDF : le navigateur imprime la page avec print.css (« Enregistrer au format PDF »).
+  // Les <details> repliés sont ouverts le temps de l'impression, et le titre devient le nom de fichier proposé.
+  const printBtn = document.querySelector('[data-print-report]');
+  if (printBtn) {
+    let reopened = [], prevTitle = document.title;
+    window.addEventListener('beforeprint', () => {
+      prevTitle = document.title;
+      if (printBtn.dataset.filename) document.title = printBtn.dataset.filename;
+      reopened = [...document.querySelectorAll('details:not([open])')];
+      reopened.forEach(d => { d.open = true; });
+    });
+    window.addEventListener('afterprint', () => {
+      document.title = prevTitle;
+      reopened.forEach(d => { d.open = false; });
+      reopened = [];
+    });
+    printBtn.addEventListener('click', () => window.print());
+  }
+
   // gras markdown du texte LLM — nœuds DOM uniquement (texte non fiable)
   document.querySelectorAll('.markdown-text').forEach(node => {
     const parts = node.textContent.split(/\*\*(.*?)\*\*/g);

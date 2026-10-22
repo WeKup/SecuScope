@@ -1,0 +1,70 @@
+/* SecuScope — rendu papier / export PDF du dashboard (chargé en media="print" par base.html).
+   Palette claire : on garde les couleurs de sévérité, on retire fond sombre, flou, animations et chrome. */
+@page{size:A4;margin:14mm 12mm;}
+
+:root{
+  --bg:#fff; --panel:#fff; --panel-2:#f1f3f7;
+  --tx:#14181f; --muted:#3d4755; --faint:#5b6677;
+  --a:#17894a; --b:#5a9a2a; --c:#b87a0a; --d:#c4561a; --f:#c8322a;
+}
+html{color-scheme:light;}
+*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+body{background:#fff;color:var(--tx);min-height:0;display:block;font-size:12px;}
+
+/* chrome et décor : hors rapport */
+.aurora,.tex,body::after,.site-header,.site-footer,.flash,.halo,.spark,#scoreModal,
+.linkbtn,.btn,form,[data-print-report]{display:none !important;}
+.wrap{max-width:none;padding:0;}
+section{padding:6px 0;}
+
+/* animations : l'état final, tout de suite */
+.rise{opacity:1 !important;transform:none !important;animation:none !important;}
+.glass{backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;border:1px solid #d5dae3;border-radius:10px;}
+.glass::after,.spot::before,.airep::before{display:none;}
+
+/* dégradés de texte : sans fond, le texte transparent disparaîtrait */
+.vmeta h1,.wm,.wm b,.lhero h1{background:none;-webkit-background-clip:border-box;background-clip:border-box;color:var(--tx);}
+.sealwrap .g{text-shadow:none;}
+.sev{box-shadow:none;}
+.s-vuln{box-shadow:none;}
+.rpt .dm{box-shadow:none;background:var(--faint);}
+
+/* rapport en pleine largeur, une colonne, rien de coupé au milieu */
+.hero,.mainrow{grid-template-columns:1fr;}
+.cats{grid-template-columns:repeat(4,1fr);}
+.cols{column-count:1;}
+.vmat{grid-template-columns:1fr;}
+.mainrow.solo .aibody{grid-template-columns:1fr;}
+.glass,.cat,.find,.row,.rpt,.scale,.vrow,.capbar{break-inside:avoid;}
+.eyebrow,.ph,.finds .head{break-after:avoid;}
+
+/* détails dépliés : le PDF doit contenir l'impact et la correction */
+details.more>*{display:revert;}
+.more summary{display:none;}
+
+/* éléments dont la couleur dépendait du fond sombre */
+.chip,.hsearch,.hmodel,.lang,.bdg{border-color:#c5ccd8;}
+.chip.infra{background:#e4f5ec;color:#116b39;border-color:#8fd0aa;}
+.chip.warn{background:#fdf1d8;color:#8a5a00;border-color:#e3b85a;}
+.cat .mbar{background:#e3e7ee;}
+.pill{background:#eceff4;color:var(--muted);}
+.p-ok{background:#e1f4e9;color:#116b39;}.p-c{background:#fdf1d8;color:#8a5a00;}
+.p-d{background:#fde6d8;color:#9a3f0b;}.p-f{background:#fbe0de;color:#a3241d;}
+.row .imp.t-c{color:#8a5a00;}.row .imp.t-d{color:#9a3f0b;}.row .imp.t-f{color:#a3241d;}
+.s-ok{background:#5fc088;}.s-na{background:#d5dae3;}
+.vc::after{display:none;}
+.airep .rlead{color:var(--tx);}
+.airep b,.chip b,.formula b,.vfoot b{color:var(--tx);}
+.capbar{color:#8a2a24;border-top-color:#d5dae3;}
+.capbar .i{background:#fbe0de;}
+.vfoot span{color:var(--muted) !important;}
+.row,.kv,.find,.rpt,.panel .ph,.finds .head,.vfoot,.infra-note,.zone-note,.capbar{border-color:#e3e7ee;}
+
+/* graduations/grille des SVG tracés en blanc translucide par secuscope.js */
+#seal circle[stroke^="rgba(255"],#trend line[stroke^="rgba(255"],#radarPlot [stroke^="rgba(255"]{stroke:#cfd5df;}
+#radarPlot text{fill:#3d4755;}
+
+/* en-tête du rapport imprimé */
+main.wrap::before{content:"SecuScope · " attr(data-report-title);display:block;font-size:10px;color:var(--faint);
+  border-bottom:1px solid #d5dae3;padding-bottom:4px;margin-bottom:6px;}
+.infra dd{max-width:none;white-space:normal;}

@@ -239,6 +239,7 @@ FR = {
     "low": "faibles",
     "Stack": "Stack",
     "View scoring scale": "Voir le barème",
+    "Export PDF report": "Exporter le rapport en PDF",
     "Score capped at %(grade)s (%(max)s): %(reasons)s.": "Note plafonnée à %(grade)s (%(max)s) : %(reasons)s.",
     "; ": " ; ",
     "Score before cap: %(raw)s/100. A serious flaw is not offset by the other categories.":
